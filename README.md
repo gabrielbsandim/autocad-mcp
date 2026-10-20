@@ -54,11 +54,21 @@ standard, or point to another file with the `AUTOCAD_MCP_LAYER_STANDARD` variabl
   are only tools with defined parameters. The single exception is `undo_last`, which sends exactly `_.UNDO n`.
 - **System variables:** only a closed list can be changed. No `SECURELOAD`, `TRUSTEDPATHS` or similar.
 - **Files:** "save as" never overwrites without `overwrite=True`, and opening a drawing is read-only by
-  default.
-- **Undo:** every action is grouped (`StartUndoMark`/`EndUndoMark`) and all of them are logged.
-- **Read-only mode:** with `AUTOCAD_MCP_READONLY=1` in the configuration, every change is refused.
+  default. Only full local paths are accepted: network shares (`\\server\share`), mapped network drives
+  and URLs are refused, because opening one would send the user's Windows credentials to that host. Set
+  `AUTOCAD_MCP_ALLOWED_DIRS` to confine every read and write to the folders you list.
+- **CSV:** cells that Excel would run as a formula (starting with `=`, `+`, `-`, `@`) get a leading
+  apostrophe.
+- **Undo:** every action is grouped (`StartUndoMark`/`EndUndoMark`). If an action fails halfway, what it
+  already did is undone, so the drawing is never left half-changed. Every action, including failures, is
+  logged.
+- **Busy or stuck CAD:** queries retry while AutoCAD is busy; changes never retry (a repeated write would
+  draw everything twice) and wait for AutoCAD to be idle first. A request that gets no answer in 60 s
+  (`AUTOCAD_MCP_TIMEOUT`) returns an error instead of hanging Claude.
+- **Read-only mode:** with `AUTOCAD_MCP_READONLY=1` in the configuration, every change is refused,
+  including saving, CSV and PDF exports.
 - **Never starts AutoCAD by itself:** it only connects to an AutoCAD that is already running.
-- **Pinned dependencies:** `mcp==2.2.0`, `pydantic==2.13.5`, `pywin32==312`.
+- **Pinned dependencies:** exact versions in `pyproject.toml`, locked with hashes in `uv.lock`.
 
 ## Installation (for whoever sets it up)
 
@@ -91,32 +101,45 @@ Then quit Claude Desktop from the system tray and open it again.
 | `AUTOCAD_MCP_READONLY` | `1` = queries only, no changes |
 | `AUTOCAD_MCP_LAYER_STANDARD` | path to your own layer standard JSON |
 | `AUTOCAD_MCP_MAX_SCAN` | maximum number of objects scanned per query (default 200000) |
+| `AUTOCAD_MCP_ALLOWED_DIRS` | folders the server may read and write, separated by `;` on Windows (default: any local folder) |
+| `AUTOCAD_MCP_TIMEOUT` | seconds to wait for AutoCAD before giving up (default 60) |
+| `AUTOCAD_MCP_LOCALE` | `pt-BR` (default: `1.234,50`, CSV with `;`) or `en-US` (`1,234.50`, CSV with `,`) |
 
 ## Development
 
 ```
 src/autocad_mcp/
   server.py          instructions for Claude, tool registration and shortcuts (prompts)
-  com.py             COM connection on a dedicated thread, retries and friendly error messages
-  acad.py            helpers: points, object summaries, undo, read-only mode, log
-  geometry.py        pure geometry (area, centroid, point in polygon), testable without AutoCAD
-  units.py           units (INSUNITS) and number formatting
+  cad.py             the CAD thread: backend choice, busy retries for reads, timeouts
+  com.py             live backend: AutoCAD over Windows COM, friendly error messages
+  filecad.py         file backend: the same object model over ezdxf, for DXF/DWG without a CAD
+  acad.py            helpers: object summaries, writes with undo and rollback, scans that report skips, log
+  rooms.py           room areas: outlines, names, totals
+  takeoff.py         block counts, lengths and hatch areas per layer
+  files.py           path checks and Excel-safe CSV
+  geometry.py        pure geometry (areas with arcs, interior points, offsets)
+  units.py           units (INSUNITS) and pt-BR / en-US number formatting
   layer_standard.py  pure layer-standard logic
   tools/             one area per file (documents, query, draw, edit, layers, areas, quantities, output)
-tests/               tests that don't need AutoCAD (pytest)
+tests/               every tool end to end against a real DXF drawing, on Windows, macOS and Linux
 scripts/live_check.py   full test with AutoCAD running (uses a new drawing and closes it without saving)
 scripts/stdio_check.py  test that mirrors Claude Desktop: stdio, undo and read-only mode
 ```
 
-```powershell
-.\.venv\Scripts\python.exe -m pip install -e ".[dev]"
-.\.venv\Scripts\python.exe -m pytest
-.\.venv\Scripts\python.exe scripts\live_check.py     # needs AutoCAD running
+```
+uv sync --extra dev
+uv run pytest
+uv run python scripts/live_check.py     # Windows, needs AutoCAD running
 ```
 
-To add a new tool: write the function in the right module under `tools/`. Reads use `await com.run(fn)`
-and writes use `await com.run(acad.write("name", args, body))`, which already handles read-only mode, undo and
-logging. Expected errors should raise `AcadError` with a clear message.
+The tests run every tool through MCP against the file backend, which mirrors the AutoCAD object
+model, so they need no AutoCAD. `live_check.py` is still the check against the real thing.
+
+To add a new tool: write the function in the right module under `tools/`. Reads use `await cad.run(fn)`;
+drawing changes use `await acad.change("name", args, body)`, which handles read-only mode, waits for an
+idle CAD, groups the undo, rolls back a failure and logs; other actions that write files use
+`await acad.act("name", args, fn)`. Loops over drawing objects go through `acad.Scan` so an unreadable
+object is reported, never silently dropped. Expected errors raise `AcadError` with a clear message.
 
 Inspired by [codesknight/AutoCAD-MCP](https://github.com/codesknight/AutoCAD-MCP) (COM + stdio architecture)
 and [felixalmesberger/AUTOCAD-MCP](https://github.com/felixalmesberger/AUTOCAD-MCP) (document management).

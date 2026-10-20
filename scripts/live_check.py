@@ -14,7 +14,7 @@ import sys
 import tempfile
 import traceback
 
-from autocad_mcp import com
+from autocad_mcp import cad
 from autocad_mcp.server import mcp
 
 results: list[tuple[str, bool, str]] = []
@@ -54,7 +54,7 @@ async def main() -> int:
     try:
         await call("autocad_status")
         print(await call("new_drawing"))
-        test_doc_name = await com.run(lambda: com.doc().Name)
+        test_doc_name = await cad.run(lambda: cad.doc().Name)
         await call("set_variable", name="INSUNITS", value="6")  # meters
 
         # Simple floor plan: 5x4 living room and 3x4 bedroom, with names
@@ -75,13 +75,12 @@ async def main() -> int:
 
         # Test block: create the definition over COM and insert it 3 times
         def make_block():
-            d = com.doc()
-            from autocad_mcp import acad
-            b = d.Blocks.Add(acad.vpoint(0, 0), "DOOR_80")
-            b.AddLine(acad.vpoint(0, 0), acad.vpoint(0.8, 0))
-            b.AddAttribute(0.1, 0, "Type", acad.vpoint(0, -0.2), "TYPE", "D1")
+            d = cad.doc()
+            b = d.Blocks.Add(cad.point(0, 0), "DOOR_80")
+            b.AddLine(cad.point(0, 0), cad.point(0.8, 0))
+            b.AddAttribute(0.1, 0, "Type", cad.point(0, -0.2), "TYPE", "D1")
             return "ok"
-        await com.run(make_block)
+        await cad.run(make_block)
         await call("insert_block", name="DOOR_80", position=[1, 0], attributes={"TYPE": "D1"})
         await call("insert_block", name="DOOR_80", position=[6, 0], attributes={"TYPE": "D2"})
         await call("insert_block", name="DOOR_80", position=[5, 2], rotation_deg=90, attributes={"TYPE": "D1"})
@@ -145,14 +144,14 @@ async def main() -> int:
     finally:
         if test_doc_name:
             def close():
-                for d in com.app().Documents:
+                for d in cad.app().Documents:
                     # after "save as" the test drawing is named test.dwg
                     if d.Name == test_doc_name or d.FullName.startswith(tmp_long):
                         d.Close(False)
                         return "closed"
                 return "not found"
             try:
-                print("Test drawing:", await com.run(close))
+                print("Test drawing:", await cad.run(close))
             except Exception as exc:  # noqa: BLE001
                 print("Failed to close the test drawing:", exc)
 

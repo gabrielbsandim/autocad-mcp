@@ -1,24 +1,25 @@
 [project]
 name = "autocad-mcp"
-version = "0.1.0"
-description = "Local MCP server that connects Claude Desktop to AutoCAD (Windows, via COM)"
+version = "0.2.0"
+description = "Local MCP server that connects Claude to AutoCAD, BricsCAD, ZWCAD, GstarCAD or DXF/DWG files"
 readme = "README.md"
 requires-python = ">=3.11"
-license = { text = "MIT" }
+license = "MIT"
 dependencies = [
     "mcp==2.2.0",
     "pydantic==2.13.5",
-    "pywin32==312",
+    "ezdxf==1.4.5",
+    "pywin32==312; sys_platform == 'win32'",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest"]
+dev = ["pytest==9.1.1", "pytest-asyncio==1.4.0"]
 
 [project.scripts]
 autocad-mcp = "autocad_mcp.__main__:main"
 
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
@@ -29,4 +30,5 @@ autocad_mcp = ["standards/*.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["src"]
+pythonpath = ["src", "tests"]
+asyncio_mode = "auto"

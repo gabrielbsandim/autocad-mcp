@@ -1,6 +1,8 @@
 """Drawing units (INSUNITS system variable) and number formatting."""
 from __future__ import annotations
 
+import os
+
 # INSUNITS -> (name, how many meters one drawing unit is worth)
 INSUNITS: dict[int, tuple[str, float | None]] = {
     0: ("unitless", None),
@@ -18,6 +20,16 @@ UNIT_ALIASES: dict[str, float] = {
     "dm": 0.1,
     "m": 1.0,
 }
+
+LOCALES = {
+    "pt-BR": {"thousands": ".", "decimal": ",", "csv_delimiter": ";"},
+    "en-US": {"thousands": ",", "decimal": ".", "csv_delimiter": ","},
+}
+
+
+def locale() -> str:
+    value = os.environ.get("AUTOCAD_MCP_LOCALE", "pt-BR").strip()
+    return value if value in LOCALES else "pt-BR"
 
 
 def meters_per_unit(insunits: int, override: str = "auto") -> tuple[float | None, str]:
@@ -43,8 +55,14 @@ def length_to_m(length_units: float, factor: float | None) -> float | None:
     return None if factor is None else length_units * factor
 
 
-def fmt_num(value: float | None, decimals: int = 2) -> str:
-    """1234.5 -> '1,234.50'."""
+def fmt_num(value: float | None, decimals: int = 2, loc: str = "") -> str:
+    """1234.5 -> '1.234,50' in pt-BR, '1,234.50' in en-US."""
     if value is None:
         return "-"
-    return f"{value:,.{decimals}f}"
+    sep = LOCALES[loc or locale()]
+    raw = f"{value:,.{decimals}f}"
+    return raw.replace(",", "\0").replace(".", sep["decimal"]).replace("\0", sep["thousands"])
+
+
+def csv_delimiter(loc: str = "") -> str:
+    return LOCALES[loc or locale()]["csv_delimiter"]
