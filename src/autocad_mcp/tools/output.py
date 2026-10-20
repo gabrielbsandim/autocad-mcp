@@ -3,11 +3,11 @@ from __future__ import annotations
 
 import os
 import re
-from typing import Any, Literal
+from typing import Any, Callable, Literal
 
 from mcp.server.mcpserver import MCPServer
 
-from autocad_mcp import acad, cad, files
+from autocad_mcp import acad, cad, files, render
 from autocad_mcp.errors import AcadError
 from autocad_mcp.tools import DESTRUCTIVE, WRITE, spec
 
@@ -66,26 +66,56 @@ def _plot(d: Any, layout: Any, path: str, plotter: str) -> None:
 def export_document(d: Any, layouts: list[str] | None, folder: str, overwrite: bool, plotter: str) -> dict[str, Any]:
     chosen = _choose(d, layouts)
     os.makedirs(folder, exist_ok=True)
-    base = os.path.splitext(d.Name)[0]
     original_layout = d.ActiveLayout
     old_bg = d.GetVariable("BACKGROUNDPLOT")
     done, failed = [], []
     try:
         d.SetVariable("BACKGROUNDPLOT", BACKGROUNDPLOT_OFF)
         for lay in chosen:
-            path = os.path.join(folder, f"{_safe(base)} - {_safe(lay.Name)}.pdf")
-            if os.path.exists(path) and not overwrite:
-                failed.append(f"{lay.Name}: {path} already exists (use overwrite=True)")
-                continue
             try:
+                path = _target(folder, d.Name, lay.Name, "pdf", overwrite)
                 _plot(d, lay, path, plotter)
                 done.append(path)
             except Exception as exc:  # noqa: BLE001
-                failed.append(f"{lay.Name}: {cad.friendly(exc)}")
+                failed.append(f"{lay.Name}: {exc if isinstance(exc, FileExistsError) else cad.friendly(exc)}")
     finally:
         d.SetVariable("BACKGROUNDPLOT", old_bg)
         d.ActiveLayout = original_layout
     return {"drawing": d.Name, "folder": folder, "created": done, "failed": failed}
+
+
+def _target(folder: str, drawing: str, sheet: str, ext: str, overwrite: bool) -> str:
+    path = os.path.join(folder, f"{_safe(os.path.splitext(drawing)[0])} - {_safe(sheet)}.{ext}")
+    if os.path.exists(path) and not overwrite:
+        raise FileExistsError(f"{path} already exists (use overwrite=True)")
+    return path
+
+
+def render_document(d: Any, layouts: list[str] | None, folder: str, overwrite: bool, fmt: str) -> dict[str, Any]:
+    chosen = render.sheets(d.dxf, layouts)
+    os.makedirs(folder, exist_ok=True)
+    done, failed = [], []
+    for lay in chosen:
+        try:
+            path = _target(folder, d.Name, lay.name, fmt, overwrite)
+            render.RENDERERS[fmt](d.dxf, lay, path)
+            done.append(path)
+        except AcadError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            failed.append(f"{lay.name}: {exc}")
+    return {"drawing": d.Name, "folder": folder, "created": done, "failed": failed}
+
+
+Exporter = Callable[[Any, str], dict[str, Any]]
+
+
+def exporter(layouts: list[str] | None, overwrite: bool, plotter: str, fmt: str) -> Exporter:
+    if cad.backend().name == "file":
+        return lambda d, folder: render_document(d, layouts, folder, overwrite, fmt)
+    if fmt != "pdf":
+        raise AcadError("With the CAD running, sheets are exported as PDF; format='svg' is for file mode.")
+    return lambda d, folder: export_document(d, layouts, folder, overwrite, plotter)
 
 
 def _active(app: Any) -> Any:
@@ -96,13 +126,13 @@ def _active(app: Any) -> Any:
 
 
 def _expand(app: Any, entry: str) -> list[str]:
-    """A drawing, every .dwg in a folder (not its subfolders), or 'open' for every saved open drawing."""
+    """A drawing, every .dwg/.dxf in a folder (not its subfolders), or 'open' for every saved open drawing."""
     if entry.strip().lower() == "open":
         return [str(d.FullName) for d in app.Documents if d.FullName]
     path = files.safe_path(entry)
     if not os.path.isdir(path):
         return [path]
-    return sorted(os.path.join(path, n) for n in os.listdir(path) if n.lower().endswith(".dwg"))
+    return sorted(os.path.join(path, n) for n in os.listdir(path) if n.lower().endswith((".dwg", ".dxf")))
 
 
 def _open_for_plot(app: Any, path: str) -> tuple[Any, bool]:
@@ -113,15 +143,14 @@ def _open_for_plot(app: Any, path: str) -> tuple[Any, bool]:
     return app.Documents.Open(path, True), True
 
 
-def _export_file(app: Any, path: str, layouts: list[str] | None, output_folder: str, overwrite: bool,
-                 plotter: str) -> dict[str, Any]:
+def _export_file(app: Any, path: str, output_folder: str, export: Exporter) -> dict[str, Any]:
     try:
         d, opened = _open_for_plot(app, files.safe_path(path, extensions={".dwg", ".dxf"}, must_exist=True))
     except Exception as exc:  # noqa: BLE001
         return {"drawing": path, "created": [], "failed": [str(cad.friendly(exc))]}
     try:
         d.Activate()
-        return export_document(d, layouts, _folder(d, output_folder), overwrite, plotter)
+        return export(d, _folder(d, output_folder))
     except Exception as exc:  # noqa: BLE001
         return {"drawing": path, "created": [], "failed": [str(cad.friendly(exc))]}
     finally:
@@ -129,42 +158,44 @@ def _export_file(app: Any, path: str, layouts: list[str] | None, output_folder: 
             d.Close(False)
 
 
-def export_many(app: Any, entries: list[str], layouts: list[str] | None, output_folder: str, overwrite: bool,
-                plotter: str) -> dict[str, Any]:
+def export_many(app: Any, entries: list[str], output_folder: str, export: Exporter) -> dict[str, Any]:
     paths = list(dict.fromkeys(p for e in entries for p in _expand(app, e)))
     if not paths:
         raise AcadError("No drawing found to export.")
     original = _active(app)
     try:
-        results = [_export_file(app, p, layouts, output_folder, overwrite, plotter) for p in paths]
+        results = [_export_file(app, p, output_folder, export) for p in paths]
     finally:
         if original is not None:
             original.Activate()
-    return {"drawings": results, "pdfs_created": sum(len(r["created"]) for r in results),
+    return {"drawings": results, "files_created": sum(len(r["created"]) for r in results),
             "failures": sum(len(r["failed"]) for r in results)}
 
 
 def register(mcp: MCPServer) -> None:
     @mcp.tool(**spec("Export sheets to PDF", WRITE))
     async def export_pdf(layouts: list[str] | None = None, output_folder: str = "", overwrite: bool = False,
-                         plotter: str = "", drawings: list[str] | None = None) -> str:
+                         plotter: str = "", drawings: list[str] | None = None,
+                         format: Literal["pdf", "svg"] = "pdf") -> str:
         """Export sheets (layouts) of the active drawing to PDF, one file per sheet, with each layout's page
         setup (paper, scale, plot style). A layout already set to a PDF plotter keeps it; others use
         'DWG To PDF.pc3' or the `plotter` given. `layouts`: sheet names, empty = all in tab order.
         `output_folder`: empty = a 'PDF' folder next to the drawing. Does not change the drawing.
         `drawings` exports many drawings in one go instead of the active one: full paths of .dwg files,
         folders (every .dwg inside) or "open" (every open drawing). Drawings that were closed are opened
-        read-only and closed again without saving; one that fails does not stop the others."""
+        read-only and closed again without saving; one that fails does not stop the others.
+        In file mode (Mac, LT, no CAD) the sheets are drawn by this server instead of plotted: every sheet
+        with something on it, or model space ('Model') when none has; `format='svg'` needs nothing extra."""
 
         def fn() -> str:
-            if cad.backend().name == "file":
-                raise AcadError("Exporting sheets to PDF needs AutoCAD (or BricsCAD, ZWCAD, GstarCAD) running.")
+            export = exporter(layouts, overwrite, plotter, format)
             if drawings:
-                return acad.dumps(export_many(cad.app(), drawings, layouts, output_folder, overwrite, plotter))
+                return acad.dumps(export_many(cad.app(), drawings, output_folder, export))
             d = cad.doc()
-            return acad.dumps(export_document(d, layouts, _folder(d, output_folder), overwrite, plotter))
+            return acad.dumps(export(d, _folder(d, output_folder)))
 
-        args = {"layouts": layouts, "folder": output_folder, "plotter": plotter, "drawings": drawings}
+        args = {"layouts": layouts, "folder": output_folder, "plotter": plotter, "drawings": drawings,
+                "format": format}
         return await acad.act("export_pdf", args, fn, limit=BATCH_TIMEOUT if drawings else PLOT_TIMEOUT)
 
     @mcp.tool(**spec("Purge or audit drawing", DESTRUCTIVE))

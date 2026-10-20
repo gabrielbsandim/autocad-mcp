@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 from typing import Any, Literal
 
+from ezdxf.addons import odafc
 from mcp.server.mcpserver import MCPServer
 
 from autocad_mcp import acad, cad, files
@@ -34,6 +35,9 @@ def status_info() -> dict[str, Any]:
         "open_drawings": [{"name": d.Name, "path": d.FullName or "(not saved)"} for d in a.Documents],
         "action_log": str(acad.LOG_FILE),
     }
+    if b.name == "file":
+        info["dwg_support"] = ("yes (ODA File Converter found)" if odafc.is_installed() else
+                               "no: .dxf only. For .dwg, install the free ODA File Converter, or save as DXF.")
     if not a.Documents.Count:
         if b.name == "file":
             info["next_step"] = "Ask the user for the full path of the .dxf or .dwg file and call open_drawing."

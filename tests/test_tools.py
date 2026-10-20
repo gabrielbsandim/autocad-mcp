@@ -289,8 +289,6 @@ async def test_describe_purge_audit(opened):
     await call("manage_layer", action="create", names=["UNUSED"])
     assert "layers" in await call("maintain_drawing", action="purge")
     assert "Audit done" in await call("maintain_drawing", action="audit")
-    with pytest.raises(ToolError, match="needs AutoCAD"):
-        await call("export_pdf")
 
 
 async def test_network_paths_are_refused(opened):

@@ -2,9 +2,9 @@
   "manifest_version": "0.4",
   "name": "autocad-mcp",
   "display_name": "AutoCAD",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Query, draw, organize and export CAD drawings: AutoCAD, BricsCAD, ZWCAD, GstarCAD, or DXF/DWG files on a Mac.",
-  "long_description": "Talk to Claude about the drawing you have open. Room areas and the area schedule, block counts by type, lengths per layer, walls from a centerline, layer cleanup against an office standard, and every sheet to PDF. On Windows it drives the CAD that is running (AutoCAD full, BricsCAD, ZWCAD, GstarCAD). On a Mac, with AutoCAD LT or with no CAD at all, it edits .dxf files directly (and .dwg with the free ODA File Converter). Every change is one undo step, nothing is saved unless you ask, and no network port is opened.",
+  "long_description": "Talk to Claude about the drawing you have open. Room areas and the area schedule, block counts by type, lengths per layer, walls from a centerline, layer cleanup against an office standard, and every sheet to PDF. On Windows it drives the CAD that is running (AutoCAD full, BricsCAD, ZWCAD, GstarCAD). On a Mac, with AutoCAD LT or with no CAD at all, it edits .dxf files directly (and .dwg with the free ODA File Converter) and still exports sheets to PDF. Built for Brazilian offices too: AsBEA layers, quadro de esquadrias, and the site table with TO, CA and TP. Every change is one undo step, nothing is saved unless you ask, and no network port is opened.",
   "author": {
     "name": "Gabriel Sandim",
     "url": "https://github.com/gabrielbsandim"
@@ -24,7 +24,7 @@
     "entry_point": "src/autocad_mcp/__main__.py",
     "mcp_config": {
       "command": "uv",
-      "args": ["run", "--directory", "${__dirname}", "--no-dev", "autocad-mcp"],
+      "args": ["run", "--directory", "${__dirname}", "--no-dev", "--extra", "pdf", "autocad-mcp"],
       "env": {
         "AUTOCAD_MCP_READONLY": "${user_config.read_only}",
         "AUTOCAD_MCP_ALLOWED_DIRS": "${user_config.allowed_dir}",

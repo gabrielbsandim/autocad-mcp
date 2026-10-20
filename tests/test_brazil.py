@@ -12,7 +12,7 @@ from mcp.server.mcpserver.exceptions import ToolError
 from autocad_mcp import cad
 from autocad_mcp.openings import opening_kind, to_meters
 from autocad_mcp.openings import _sizes as sizes
-from autocad_mcp.tools.output import export_many
+from autocad_mcp.tools.output import export_document, export_many
 
 from conftest import call, call_json
 
@@ -163,12 +163,13 @@ def test_batch_pdf_opens_read_only_closes_and_restores(tmp_path):
     already_open = FakeDoc(str(folder / "a.dwg"), app)
     app.Documents.append(already_open)
     app.ActiveDocument = already_open
-    result = export_many(app, [str(folder)], None, str(tmp_path / "out"), False, "")
-    assert result["pdfs_created"] == 4
+    result = export_many(app, [str(folder)], str(tmp_path / "out"), lambda d, f: export_document(d, None, f, False, ""))
+    assert result["files_created"] == 4
     assert result["failures"] == 0
     assert app.Documents.opened == [(str(folder / "b.dwg"), True)]
     assert app.Documents == [already_open]
     assert app.ActiveDocument is already_open
     assert sorted(os.listdir(tmp_path / "out")) == ["a - A1.pdf", "a - A2.pdf", "b - A1.pdf", "b - A2.pdf"]
-    again = export_many(app, [str(folder / "a.dwg")], ["A9"], str(tmp_path / "out"), False, "")
+    again = export_many(app, [str(folder / "a.dwg")], str(tmp_path / "out"),
+                        lambda d, f: export_document(d, ["A9"], f, False, ""))
     assert "not found" in again["drawings"][0]["failed"][0]

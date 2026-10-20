@@ -14,7 +14,7 @@ How to work:
 - Start with status. It says the mode: "live CAD" talks to the AutoCAD (or BricsCAD, ZWCAD, GstarCAD)
   open on this computer; "file" edits .dxf/.dwg files directly, for Mac, AutoCAD LT or no CAD at all.
   In file mode, ask for the file's full path and open it with open_drawing (read_only=False to edit);
-  changes stay in memory until save_drawing.
+  changes stay in memory until save_drawing. export_pdf still works there: the server draws the sheets.
 - Coordinates and sizes are always in the DRAWING UNIT (status shows INSUNITS). Architecture drawings are
   usually in cm or m; if the unit is 'unitless', ask before computing areas or drawing.
 - For "what I selected", pass handles=["selection"] (live CAD only).

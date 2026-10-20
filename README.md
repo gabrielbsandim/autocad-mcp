@@ -75,7 +75,7 @@ Then quit Claude Desktop completely and open it again.
 | Edit | `transform` (move, copy in series, rotate, scale, mirror, offset), `delete_entities`, `change_properties` |
 | Layers | `manage_layer`, `merge_layers`, **`check_layer_standard` and `apply_layer_standard`** (AsBEA, AIA or yours) |
 | Areas and quantities | **`room_areas`**, `label_rooms`, **`takeoff`** (blocks by type, lengths and hatch areas per layer, **door and window schedule**), **`site_areas`** (lot, built area per floor, projection, permeable, **TO, CA, TP** against the zoning limits), `place_table`, `export_csv` |
-| Output | **`export_pdf`** (every sheet with its own page setup, of one drawing, a list, a folder or every open drawing), `maintain_drawing` (purge, audit) |
+| Output | **`export_pdf`** (every sheet with its own page setup, of one drawing, a list, a folder or every open drawing; also on a Mac), `maintain_drawing` (purge, audit) |
 
 Every tool has a title and says whether it only reads, changes the drawing, or can destroy something, so
 Claude asks before the risky ones.
@@ -110,11 +110,18 @@ from no template, is converted. Copy
 |---|---|---|
 | Works with | AutoCAD full, BricsCAD, ZWCAD, GstarCAD, already open | `.dxf`; `.dwg` through ODA File Converter |
 | Platforms | Windows | Windows, Mac, Linux |
-| Selection, PDF export | yes | no |
+| Selection | yes | no |
+| PDF | plotted by the CAD with each layout's page setup | drawn by the server (PDF or SVG), lines in black |
 | Saving | when you ask | changes stay in memory until `save_drawing` |
 
+The live CAD is found by its automation name: AutoCAD, `BricscadApp.AcadApplication`, `ZWCAD.Application` and
+`GCAD.Application`, in that order; `AUTOCAD_MCP_PROGID` picks one. The clones copy the AutoCAD object model,
+so the same calls apply; run `scripts/live_check.py` with yours open to confirm it before relying on it.
+
 AutoCAD LT has no automation interface, so with LT use file mode: save as DXF (or install ODA File Converter
-for DWG). The ODA converter is free for personal use; check its license before using it in a company.
+for DWG). Driving LT live through AutoLISP was left out on purpose: LT only accepts it typed into its command
+line, so it would mean faking keystrokes into the user's window, which cannot be tested and breaks when the
+user clicks. The ODA converter is free for personal use; check its license before using it in a company.
 
 ## Security
 
@@ -169,6 +176,9 @@ src/autocad_mcp/
   geometry.py        pure geometry (areas with arcs, interior points, offsets)
   units.py           INSUNITS and pt-BR / en-US number formatting
   layer_standard.py  pure layer-standard logic; standards/ holds AsBEA and AIA
+  openings.py        door and window schedule
+  site.py            site areas and TO, CA, TP
+  render.py          sheets to SVG or PDF without a CAD
   tools/             one area per file
 tests/               every tool end to end over MCP against a real DXF, on Windows, macOS and Linux
 scripts/stdio_check.py  the server as Claude runs it: a child process over stdio (--live for the CAD)
@@ -176,7 +186,7 @@ scripts/live_check.py   every tool against the CAD that is open, on a new drawin
 ```
 
 ```
-uv sync --extra dev
+uv sync --extra dev --extra pdf
 uv run pytest
 uv run python scripts/stdio_check.py
 uv run python scripts/live_check.py     # Windows, with the CAD open
