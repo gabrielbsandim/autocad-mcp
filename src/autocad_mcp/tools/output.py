@@ -3,13 +3,13 @@ from __future__ import annotations
 
 import os
 import re
-from typing import Any
+from typing import Any, Literal
 
 from mcp.server.mcpserver import MCPServer
 
 from autocad_mcp import acad, cad, files
 from autocad_mcp.errors import AcadError
-from autocad_mcp.tools import DESTRUCTIVE, WRITE
+from autocad_mcp.tools import DESTRUCTIVE, WRITE, spec
 
 PDF_DEVICE = "DWG To PDF.pc3"
 PLOT_TIMEOUT = 600.0
@@ -46,7 +46,7 @@ def _choose(d: Any, layouts: list[str] | None) -> list[Any]:
         chosen = [l for l in all_layouts if l.Name.lower() in wanted]
         missing = wanted - {l.Name.lower() for l in chosen}
         if missing:
-            raise AcadError(f"Sheet(s) not found: {', '.join(sorted(missing))}. Use list_layouts.")
+            raise AcadError(f"Sheet(s) not found: {', '.join(sorted(missing))}. See describe_drawing(sections=['layouts']).")
     if not chosen:
         raise AcadError("The drawing has no sheets (layouts).")
     return chosen
@@ -62,58 +62,60 @@ def _plot(d: Any, layout: Any, path: str, plotter: str) -> None:
     acad.wait_for_file(path, timeout=180)
 
 
+def export_document(d: Any, layouts: list[str] | None, folder: str, overwrite: bool, plotter: str) -> dict[str, Any]:
+    chosen = _choose(d, layouts)
+    os.makedirs(folder, exist_ok=True)
+    base = os.path.splitext(d.Name)[0]
+    original_layout = d.ActiveLayout
+    old_bg = d.GetVariable("BACKGROUNDPLOT")
+    done, failed = [], []
+    try:
+        d.SetVariable("BACKGROUNDPLOT", BACKGROUNDPLOT_OFF)
+        for lay in chosen:
+            path = os.path.join(folder, f"{_safe(base)} - {_safe(lay.Name)}.pdf")
+            if os.path.exists(path) and not overwrite:
+                failed.append(f"{lay.Name}: {path} already exists (use overwrite=True)")
+                continue
+            try:
+                _plot(d, lay, path, plotter)
+                done.append(path)
+            except Exception as exc:  # noqa: BLE001
+                failed.append(f"{lay.Name}: {cad.friendly(exc)}")
+    finally:
+        d.SetVariable("BACKGROUNDPLOT", old_bg)
+        d.ActiveLayout = original_layout
+    return {"drawing": d.Name, "folder": folder, "created": done, "failed": failed}
+
+
 def register(mcp: MCPServer) -> None:
-    @mcp.tool(annotations=WRITE)
-    async def export_layouts_pdf(layouts: list[str] | None = None, output_folder: str = "",
-                                 overwrite: bool = False, plotter: str = "") -> str:
-        """Export sheets (layouts) to PDF, one file per sheet, using each layout's page setup
-        (paper, scale, plot style). A layout already set to a PDF plotter keeps it; others use
-        'DWG To PDF.pc3', or the `plotter` given (e.g. 'AutoCAD PDF (High Quality Print).pc3').
-        - layouts: sheet names; empty = all of them, in tab order.
-        - output_folder: destination folder; empty = a 'PDF' folder next to the drawing.
-        Does not change the drawing."""
+    @mcp.tool(**spec("Export sheets to PDF", WRITE))
+    async def export_pdf(layouts: list[str] | None = None, output_folder: str = "", overwrite: bool = False,
+                         plotter: str = "") -> str:
+        """Export sheets (layouts) of the active drawing to PDF, one file per sheet, with each layout's page
+        setup (paper, scale, plot style). A layout already set to a PDF plotter keeps it; others use
+        'DWG To PDF.pc3' or the `plotter` given. `layouts`: sheet names, empty = all in tab order.
+        `output_folder`: empty = a 'PDF' folder next to the drawing. Does not change the drawing."""
 
         def fn() -> str:
             if cad.backend().name == "file":
-                raise AcadError("Exporting sheets to PDF needs AutoCAD (or BricsCAD, ZWCAD) running.")
+                raise AcadError("Exporting sheets to PDF needs AutoCAD (or BricsCAD, ZWCAD, GstarCAD) running.")
             d = cad.doc()
-            chosen = _choose(d, layouts)
-            folder = _folder(d, output_folder)
-            os.makedirs(folder, exist_ok=True)
-            base = os.path.splitext(d.Name)[0]
-            original_layout = d.ActiveLayout
-            old_bg = d.GetVariable("BACKGROUNDPLOT")
-            done, failed = [], []
-            try:
-                d.SetVariable("BACKGROUNDPLOT", BACKGROUNDPLOT_OFF)
-                for lay in chosen:
-                    path = os.path.join(folder, f"{_safe(base)} - {_safe(lay.Name)}.pdf")
-                    if os.path.exists(path) and not overwrite:
-                        failed.append(f"{lay.Name}: {path} already exists (use overwrite=True)")
-                        continue
-                    try:
-                        _plot(d, lay, path, plotter)
-                        done.append(path)
-                    except Exception as exc:  # noqa: BLE001
-                        failed.append(f"{lay.Name}: {cad.friendly(exc)}")
-            finally:
-                d.SetVariable("BACKGROUNDPLOT", old_bg)
-                d.ActiveLayout = original_layout
-            return acad.dumps({"folder": folder, "created": done, "failed": failed})
+            return acad.dumps(export_document(d, layouts, _folder(d, output_folder), overwrite, plotter))
 
-        return await acad.act("export_layouts_pdf", {"layouts": layouts, "folder": output_folder,
-                                                     "plotter": plotter}, fn, limit=PLOT_TIMEOUT)
+        return await acad.act("export_pdf", {"layouts": layouts, "folder": output_folder, "plotter": plotter}, fn,
+                              limit=PLOT_TIMEOUT)
 
-    @mcp.tool(annotations=DESTRUCTIVE)
-    async def purge_drawing() -> str:
-        """Clean up the drawing (PURGE): remove unused layers, blocks, styles and linetypes.
-        Makes the file smaller and tidier. Confirm with the user first."""
+    @mcp.tool(**spec("Purge or audit drawing", DESTRUCTIVE))
+    async def maintain_drawing(action: Literal["purge", "audit"], fix: bool = True) -> str:
+        """- purge: remove unused layers, blocks, styles and linetypes (smaller, tidier file). Confirm first.
+        - audit: check the drawing's integrity and, with fix=True, fix the errors found (odd behaviour,
+          slowness, errors). One undo step either way."""
 
         def counts(d: Any) -> dict[str, int]:
             return {"layers": d.Layers.Count, "blocks": d.Blocks.Count, "text_styles": d.TextStyles.Count,
                     "linetypes": d.Linetypes.Count, "dim_styles": d.DimStyles.Count}
 
-        def body(d: Any) -> str:
+        def purge(d: Any) -> str:
             before = counts(d)
             for _ in range(3):  # nested items only become free after the first pass
                 d.PurgeAll()
@@ -121,14 +123,7 @@ def register(mcp: MCPServer) -> None:
             removed = {k: before[k] - after[k] for k in before if before[k] != after[k]}
             return "Purge finished. Removed: " + (", ".join(f"{v} {k}" for k, v in removed.items()) or "nothing")
 
-        return await acad.change("purge_drawing", {}, body)
-
-    @mcp.tool(annotations=WRITE)
-    async def audit_drawing(fix: bool = True) -> str:
-        """Check the drawing's integrity (AUDIT) and, with fix=True, fix the errors found.
-        Useful when the file behaves oddly, is slow or throws errors."""
-
-        def body(d: Any) -> str:
+        def audit(d: Any) -> str:
             d.AuditInfo(bool(fix))
             found = getattr(d, "last_audit", None)
             if found:
@@ -136,4 +131,5 @@ def register(mcp: MCPServer) -> None:
             return "Audit done" + (" with error fixing." if fix else " (without fixing).") + \
                 " Details are on the CAD command line."
 
-        return await acad.change("audit_drawing", {"fix": fix}, body)
+        return await acad.change("maintain_drawing", {"action": action, "fix": fix},
+                                 purge if action == "purge" else audit)

@@ -1,0 +1,20 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "autocad-mcp",
+  "description": "Claude and your CAD drawings",
+  "owner": {
+    "name": "Gabriel Sandim",
+    "url": "https://github.com/gabrielbsandim"
+  },
+  "plugins": [
+    {
+      "name": "autocad",
+      "description": "Room areas, area schedules, block takeoffs, walls, layer standards and PDF sheets for AutoCAD, BricsCAD, ZWCAD, GstarCAD or DXF/DWG files.",
+      "author": {
+        "name": "Gabriel Sandim"
+      },
+      "category": "productivity",
+      "source": "./"
+    }
+  ]
+}

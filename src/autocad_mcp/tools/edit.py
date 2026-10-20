@@ -2,18 +2,16 @@
 from __future__ import annotations
 
 import math
-from typing import Any
+from typing import Any, Literal
 
 from mcp.server.mcpserver import MCPServer
 
 from autocad_mcp import acad, cad
 from autocad_mcp.errors import AcadError
-from autocad_mcp.tools import DESTRUCTIVE, WRITE
+from autocad_mcp.tools import DESTRUCTIVE, WRITE, spec
 
-HANDLES_HELP = ("`handles`: list of handles (from query_entities/get_selection) or [\"selection\"] "
-                "to use the objects the user selected in AutoCAD.")
+HANDLES_HELP = ("`handles`: handles from find_entities, or [\"selection\"] for what the user selected in the CAD.")
 
-# Accepted color names (ACI = AutoCAD Color Index).
 COLORS = {
     "bylayer": 256, "byblock": 0,
     "red": 1, "yellow": 2, "green": 3, "cyan": 4, "blue": 5, "magenta": 6,
@@ -54,108 +52,115 @@ def ensure_linetype(d: Any, name: str) -> None:
     raise AcadError(f"Linetype {name!r} does not exist and could not be loaded from acadiso.lin.")
 
 
-def _vec(offset: list[float], k: float = 1.0) -> Any:
-    if len(offset) < 2:
-        raise AcadError("The offset must be [dx, dy] or [dx, dy, dz].")
-    return cad.point(*(v * k for v in offset[:3]))
+def _vec(values: list[float] | None, what: str, k: float = 1.0) -> Any:
+    if not values or len(values) < 2:
+        raise AcadError(f"`{what}` is required, as [x, y].")
+    return cad.point(*(v * k for v in values[:3]))
+
+
+def _move(ents: list[Any], a: dict[str, Any]) -> str:
+    for e in ents:
+        e.Move(cad.point(0, 0), _vec(a["offset"], "offset"))
+    return f"{len(ents)} object(s) moved."
+
+
+def _copy(ents: list[Any], a: dict[str, Any]) -> str:
+    n = max(1, min(int(a["times"]), MAX_COPIES))
+    new = []
+    for k in range(1, n + 1):
+        for e in ents:
+            c = e.Copy()
+            c.Move(cad.point(0, 0), _vec(a["offset"], "offset", k))
+            new.append(c.Handle)
+    more = "..." if len(new) > 50 else ""
+    return f"{len(new)} copy(ies) created. Handles: {', '.join(new[:50])}{more}"
+
+
+def _rotate(ents: list[Any], a: dict[str, Any]) -> str:
+    for e in ents:
+        e.Rotate(_vec(a["base"], "base"), math.radians(a["angle_deg"]))
+    return f"{len(ents)} object(s) rotated {a['angle_deg']}°."
+
+
+def _scale(ents: list[Any], a: dict[str, Any]) -> str:
+    if a["factor"] <= 0:
+        raise AcadError("The scale factor must be positive.")
+    for e in ents:
+        e.ScaleEntity(_vec(a["base"], "base"), float(a["factor"]))
+    return f"{len(ents)} object(s) scaled by {a['factor']}."
+
+
+def _mirror(ents: list[Any], a: dict[str, Any]) -> str:
+    new = []
+    for e in ents:
+        new.append(e.Mirror(_vec(a["p1"], "p1"), _vec(a["p2"], "p2")).Handle)
+        if not a["keep_original"]:
+            e.Delete()
+    return f"{len(new)} object(s) mirrored. Handles: {', '.join(new[:50])}"
+
+
+def _offset(ents: list[Any], a: dict[str, Any]) -> str:
+    if not a["distance"]:
+        raise AcadError("The offset distance cannot be zero.")
+    new = [o.Handle for e in ents for o in e.Offset(float(a["distance"]))]
+    return f"{len(new)} offset(s) created. Handles: {', '.join(new[:50])}"
+
+
+OPERATIONS = {"move": _move, "copy": _copy, "rotate": _rotate, "scale": _scale, "mirror": _mirror,
+              "offset": _offset}
+
+
+def _apply(e: Any, layer: str, color: int | None, linetype: str, lineweight_mm: float | None,
+           text: str | None, text_height: float | None) -> None:
+    if layer:
+        e.Layer = layer
+    if color is not None:
+        e.Color = color
+    if linetype:
+        e.Linetype = linetype
+    if lineweight_mm is not None:
+        e.Lineweight = acad.lineweight_enum(lineweight_mm)
+    if acad.kind(e) not in acad.TEXT_TYPES:
+        return
+    if text is not None:
+        e.TextString = text
+    if text_height is not None:
+        e.Height = float(text_height)
 
 
 def register(mcp: MCPServer) -> None:
-    @mcp.tool(annotations=WRITE, description="Move objects by an offset [dx, dy]. " + HANDLES_HELP)
-    async def move_entities(handles: list[str], offset: list[float]) -> str:
-        def body(d: Any) -> str:
-            ents = acad.resolve_handles(d, handles)
-            for e in ents:
-                e.Move(cad.point(0, 0), _vec(offset))
-            return f"{len(ents)} object(s) moved."
-
-        return await acad.change("move_entities", {"handles": handles, "offset": offset}, body)
-
-    @mcp.tool(annotations=WRITE, description="Copy objects by an offset [dx, dy]; `times` > 1 creates a series of copies (like a linear array). " + HANDLES_HELP)
-    async def copy_entities(handles: list[str], offset: list[float], times: int = 1) -> str:
-        n = max(1, min(int(times), MAX_COPIES))
-
-        def body(d: Any) -> str:
-            ents = acad.resolve_handles(d, handles)
-            new = []
-            for k in range(1, n + 1):
-                for e in ents:
-                    c = e.Copy()
-                    c.Move(cad.point(0, 0), _vec(offset, k))
-                    new.append(c.Handle)
-            more = "..." if len(new) > 50 else ""
-            return f"{len(new)} copy(ies) created. Handles: {', '.join(new[:50])}{more}"
-
-        return await acad.change("copy_entities", {"handles": handles, "offset": offset, "times": n}, body)
-
-    @mcp.tool(annotations=WRITE, description="Rotate objects around `base` [x,y] (degrees, counterclockwise). " + HANDLES_HELP)
-    async def rotate_entities(handles: list[str], base: list[float], angle_deg: float) -> str:
-        def body(d: Any) -> str:
-            ents = acad.resolve_handles(d, handles)
-            for e in ents:
-                e.Rotate(_vec(base), math.radians(angle_deg))
-            return f"{len(ents)} object(s) rotated {angle_deg}°."
-
-        return await acad.change("rotate_entities", {"handles": handles, "base": base, "angle": angle_deg}, body)
-
-    @mcp.tool(annotations=WRITE, description="Scale objects from `base` [x,y] by `factor`. " + HANDLES_HELP)
-    async def scale_entities(handles: list[str], base: list[float], factor: float) -> str:
-        if factor <= 0:
-            raise AcadError("The scale factor must be positive.")
+    @mcp.tool(**spec("Move, copy, rotate, scale, mirror or offset", WRITE, (
+        "Change objects geometrically, as one undo step. " + HANDLES_HELP + "\n"
+        "- move: by `offset` [dx, dy]. copy: by `offset`; `times` > 1 makes a series (linear array).\n"
+        "- rotate: around `base` [x, y] by `angle_deg` (counterclockwise). scale: from `base` by `factor`.\n"
+        "- mirror: across the line `p1`-`p2`; keep_original=False removes the originals.\n"
+        "- offset: parallel copy of lines, polylines, arcs, circles at `distance` (negative = other side).")))
+    async def transform(handles: list[str], operation: Literal["move", "copy", "rotate", "scale", "mirror", "offset"],
+                        offset: list[float] | None = None, times: int = 1, base: list[float] | None = None,
+                        angle_deg: float = 0, factor: float = 1.0, p1: list[float] | None = None,
+                        p2: list[float] | None = None, keep_original: bool = True, distance: float = 0) -> str:
+        args = {"offset": offset, "times": times, "base": base, "angle_deg": angle_deg, "factor": factor,
+                "p1": p1, "p2": p2, "keep_original": keep_original, "distance": distance}
 
         def body(d: Any) -> str:
-            ents = acad.resolve_handles(d, handles)
-            for e in ents:
-                e.ScaleEntity(_vec(base), float(factor))
-            return f"{len(ents)} object(s) scaled by {factor}."
+            return OPERATIONS[operation](acad.resolve_handles(d, handles), args)
 
-        return await acad.change("scale_entities", {"handles": handles, "base": base, "factor": factor}, body)
+        return await acad.change("transform", {"handles": handles, "operation": operation, **args}, body)
 
-    @mcp.tool(annotations=WRITE, description="Mirror objects across the line p1-p2. keep_original=True keeps the originals. " + HANDLES_HELP)
-    async def mirror_entities(handles: list[str], p1: list[float], p2: list[float], keep_original: bool = True) -> str:
-        def body(d: Any) -> str:
-            ents = acad.resolve_handles(d, handles)
-            new = []
-            for e in ents:
-                m = e.Mirror(_vec(p1), _vec(p2))
-                new.append(m.Handle)
-                if not keep_original:
-                    e.Delete()
-            return f"{len(new)} object(s) mirrored. Handles: {', '.join(new[:50])}"
-
-        return await acad.change("mirror_entities", {"handles": handles, "p1": p1, "p2": p2,
-                                                     "keep": keep_original}, body)
-
-    @mcp.tool(annotations=WRITE, description="Create a parallel copy (offset) of lines/polylines/arcs/circles at the given distance; a negative distance goes to the other side. " + HANDLES_HELP)
-    async def offset_entities(handles: list[str], distance: float) -> str:
-        if distance == 0:
-            raise AcadError("The offset distance cannot be zero.")
-
-        def body(d: Any) -> str:
-            ents = acad.resolve_handles(d, handles)
-            new = []
-            for e in ents:
-                new.extend(o.Handle for o in e.Offset(float(distance)))
-            return f"{len(new)} offset(s) created. Handles: {', '.join(new[:50])}"
-
-        return await acad.change("offset_entities", {"handles": handles, "distance": distance}, body)
-
-    @mcp.tool(annotations=DESTRUCTIVE, description="DELETES objects from the drawing (can be undone with undo_last). Confirm with the user before deleting many objects. " + HANDLES_HELP)
+    @mcp.tool(**spec("Delete objects", DESTRUCTIVE, "DELETES objects from the drawing (undo brings them back). "
+                     "Confirm with the user before deleting many objects. " + HANDLES_HELP))
     async def delete_entities(handles: list[str]) -> str:
         def body(d: Any) -> str:
             ents = acad.resolve_handles(d, handles)
             for e in ents:
                 e.Delete()
-            return f"{len(ents)} object(s) deleted. Use undo_last to undo."
+            return f"{len(ents)} object(s) deleted. Use undo to bring them back."
 
         return await acad.change("delete_entities", {"handles": handles}, body)
 
-    @mcp.tool(
-        annotations=WRITE,
-        description="Change object properties: layer, color (a name such as 'red', 'bylayer', or an ACI number), "
-        "linetype (e.g. 'CONTINUOUS', 'DASHED', 'ByLayer'), lineweight in mm (e.g. 0.25; -1 = ByLayer), "
-        "text (for Text/MText) and text height. " + HANDLES_HELP,
-    )
+    @mcp.tool(**spec("Change properties", WRITE, "Change object properties: layer, color (a name such as 'red', "
+                     "'bylayer', or an ACI number), linetype (e.g. 'CONTINUOUS', 'DASHED', 'ByLayer'), lineweight "
+                     "in mm (e.g. 0.25; -1 = ByLayer), text (Text/MText) and text height. " + HANDLES_HELP))
     async def change_properties(handles: list[str], layer: str = "", color: str = "", linetype: str = "",
                                 lineweight_mm: float | None = None, text: str | None = None,
                                 text_height: float | None = None) -> str:
@@ -176,21 +181,3 @@ def register(mcp: MCPServer) -> None:
         args = {"handles": handles, "layer": layer, "color": color, "linetype": linetype,
                 "lineweight_mm": lineweight_mm, "text": text, "text_height": text_height}
         return await acad.change("change_properties", args, body)
-
-
-def _apply(e: Any, layer: str, color: int | None, linetype: str, lineweight_mm: float | None,
-           text: str | None, text_height: float | None) -> None:
-    if layer:
-        e.Layer = layer
-    if color is not None:
-        e.Color = color
-    if linetype:
-        e.Linetype = linetype
-    if lineweight_mm is not None:
-        e.Lineweight = acad.lineweight_enum(lineweight_mm)
-    if acad.kind(e) not in acad.TEXT_TYPES:
-        return
-    if text is not None:
-        e.TextString = text
-    if text_height is not None:
-        e.Height = float(text_height)

@@ -7,7 +7,9 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
-DEFAULT_STANDARD = Path(__file__).parent / "standards" / "architecture_layers.json"
+STANDARDS_DIR = Path(__file__).parent / "standards"
+BUILT_IN = {"aia": STANDARDS_DIR / "architecture_layers.json", "asbea": STANDARDS_DIR / "asbea_layers.json"}
+DEFAULT_STANDARD = BUILT_IN["aia"]
 
 # System layers that must never be renamed.
 PROTECTED = {"0", "DEFPOINTS"}
@@ -24,11 +26,17 @@ class LayerRule:
     aliases: list[str] = field(default_factory=list)
 
 
+def built_in(name: str) -> Path | None:
+    return BUILT_IN.get(name.strip().lower())
+
+
 def standard_path(custom: str = "") -> Path:
     if custom:
         return Path(custom)
-    env = os.environ.get("AUTOCAD_MCP_LAYER_STANDARD", "")
-    return Path(env) if env else DEFAULT_STANDARD
+    env = os.environ.get("AUTOCAD_MCP_LAYER_STANDARD", "").strip()
+    if not env:
+        return DEFAULT_STANDARD
+    return built_in(env) or Path(env)
 
 
 def load_standard(path: Path) -> list[LayerRule]:

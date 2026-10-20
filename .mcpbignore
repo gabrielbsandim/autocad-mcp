@@ -1,0 +1,11 @@
+.git/
+.github/
+.claude-plugin/
+.venv/
+tests/
+scripts/
+**/__pycache__/
+*.egg-info/
+*.pyc
+.pytest_cache/
+*.mcpb

@@ -1,235 +1,227 @@
-"""Geometry creation: lines, polylines, walls, text, dimensions, hatches, blocks."""
+"""Geometry creation in one call: lines, polylines, walls, text, dimensions, hatches and blocks."""
 from __future__ import annotations
 
 import math
-from typing import Any
+from typing import Annotated, Any, Literal, Union
 
 from mcp.server.mcpserver import MCPServer
+from pydantic import BaseModel, ConfigDict, Field
 
 from autocad_mcp import acad, cad, files
 from autocad_mcp.errors import AcadError
-from autocad_mcp.tools import WRITE
+from autocad_mcp.tools import WRITE, spec
 
-PointList = list[list[float]]
+Point = Annotated[list[float], Field(min_length=2, max_length=3)]
+Positive = Annotated[float, Field(gt=0)]
 
-
-def _set_layer(ent: Any, d: Any, layer: str) -> None:
-    if layer:
-        acad.ensure_layer(d, layer)
-        ent.Layer = layer
+MAX_ITEMS = 500
 
 
-def _check_points(points: PointList, minimum: int) -> None:
-    if len(points) < minimum:
-        raise AcadError(f"At least {minimum} points are required.")
-    if any(len(p) < 2 for p in points):
-        raise AcadError("Each point must be [x, y] or [x, y, z].")
+def _lean_schema(schema: dict[str, Any]) -> None:
+    """Drop the auto-generated titles: ten item types repeat them and Claude pays for every token."""
+    schema.pop("title", None)
+    for prop in schema.get("properties", {}).values():
+        prop.pop("title", None)
+
+
+class _Item(BaseModel):
+    model_config = ConfigDict(json_schema_extra=_lean_schema)
+
+    layer: str = ""
+
+
+class Line(_Item):
+    shape: Literal["line"]
+    start: Point
+    end: Point
+
+
+class Polyline(_Item):
+    shape: Literal["polyline"]
+    points: Annotated[list[Point], Field(min_length=2)]
+    closed: bool = Field(False, description="True for room outlines, so their area can be computed.")
+
+
+class Rectangle(_Item):
+    shape: Literal["rectangle"]
+    corner: Point = Field(description="Lower-left corner.")
+    width: Positive
+    height: Positive
+
+
+class Circle(_Item):
+    shape: Literal["circle"]
+    center: Point
+    radius: Positive
+
+
+class Arc(_Item):
+    shape: Literal["arc"]
+    center: Point
+    radius: Positive
+    start_angle_deg: float
+    end_angle_deg: float = Field(description="Counterclockwise from the X axis. Door swings are arcs.")
+
+
+class Walls(_Item):
+    shape: Literal["walls"]
+    path: Annotated[list[Point], Field(min_length=2, description="Wall CENTERLINE.")]
+    thickness: Positive = Field(description="Total thickness in drawing units (0.15 in m, 15 in cm).")
+    closed: bool = False
+
+
+class Text(_Item):
+    shape: Literal["text"]
+    text: str
+    position: Point
+    height: Positive
+    rotation_deg: float = 0
+    multiline_width: float = Field(0, ge=0, description="> 0 makes an MText wrapping at this width.")
+
+
+class Dimension(_Item):
+    shape: Literal["dimension"]
+    start: Point
+    end: Point
+    text_position: Point = Field(description="Where the dimension line goes.")
+    kind: Literal["aligned", "linear"] = "aligned"
+    angle_deg: float = Field(0, description="For linear: 0 horizontal, 90 vertical.")
+
+
+class Hatch(_Item):
+    shape: Literal["hatch"]
+    boundary: Annotated[list[Point], Field(min_length=3)] | None = None
+    boundary_handle: str = Field("", description="An existing closed polyline, instead of boundary points.")
+    pattern: str = Field("SOLID", description="SOLID, ANSI31, AR-CONC, AR-SAND, AR-BRSTD, AR-PARQ1, DOTS, GRAVEL...")
+    scale: Positive = 1.0
+    angle_deg: float = 0
+
+
+class Block(_Item):
+    shape: Literal["block"]
+    name: str = Field(description="A block defined in the drawing, or the full path of a .dwg/.dxf.")
+    position: Point
+    scale: Positive = 1.0
+    rotation_deg: float = 0
+    attributes: dict[str, str] | None = Field(None, description='By TAG, e.g. {"TIPO": "P1"}.')
+
+
+Shape = Annotated[Union[Line, Polyline, Rectangle, Circle, Arc, Walls, Text, Dimension, Hatch, Block],
+                  Field(discriminator="shape")]
 
 
 def _p(p: list[float]) -> Any:
-    if len(p) < 2:
-        raise AcadError("Each point must be [x, y] or [x, y, z].")
     return cad.point(*p[:3])
 
 
-def _lwpoly(ms: Any, points: PointList, closed: bool) -> Any:
-    flat = [c for p in points for c in (p[0], p[1])]
-    pl = ms.AddLightWeightPolyline(cad.flat(flat))
+def _lwpoly(ms: Any, points: list[list[float]], closed: bool) -> Any:
+    pl = ms.AddLightWeightPolyline(cad.flat([c for p in points for c in (p[0], p[1])]))
     pl.Closed = bool(closed)
     return pl
 
 
-def _block_source(name: str) -> str:
-    if name.lower().endswith((".dwg", ".dxf")):
-        return files.safe_path(name, extensions={".dwg", ".dxf"}, must_exist=True)
-    return name
+def _line(ms: Any, d: Any, it: Line) -> list[Any]:
+    return [ms.AddLine(_p(it.start), _p(it.end))]
+
+
+def _polyline(ms: Any, d: Any, it: Polyline) -> list[Any]:
+    return [_lwpoly(ms, it.points, it.closed)]
+
+
+def _rectangle(ms: Any, d: Any, it: Rectangle) -> list[Any]:
+    x, y = it.corner[0], it.corner[1]
+    pts = [[x, y], [x + it.width, y], [x + it.width, y + it.height], [x, y + it.height]]
+    return [_lwpoly(ms, pts, True)]
+
+
+def _circle(ms: Any, d: Any, it: Circle) -> list[Any]:
+    return [ms.AddCircle(_p(it.center), it.radius)]
+
+
+def _arc(ms: Any, d: Any, it: Arc) -> list[Any]:
+    return [ms.AddArc(_p(it.center), it.radius, math.radians(it.start_angle_deg), math.radians(it.end_angle_deg))]
+
+
+def _walls(ms: Any, d: Any, it: Walls) -> list[Any]:
+    axis = _lwpoly(ms, it.path, it.closed)
+    try:
+        return [o for off in (it.thickness / 2, -it.thickness / 2) for o in axis.Offset(off)]
+    finally:
+        axis.Delete()
+
+
+def _text(ms: Any, d: Any, it: Text) -> list[Any]:
+    if it.multiline_width > 0:
+        ent = ms.AddMText(_p(it.position), it.multiline_width, it.text)
+        ent.Height = it.height
+    else:
+        ent = ms.AddText(it.text, _p(it.position), it.height)
+    if it.rotation_deg:
+        ent.Rotation = math.radians(it.rotation_deg)
+    return [ent]
+
+
+def _dimension(ms: Any, d: Any, it: Dimension) -> list[Any]:
+    if it.kind == "linear":
+        return [ms.AddDimRotated(_p(it.start), _p(it.end), _p(it.text_position), math.radians(it.angle_deg))]
+    return [ms.AddDimAligned(_p(it.start), _p(it.end), _p(it.text_position))]
+
+
+def _hatch(ms: Any, d: Any, it: Hatch) -> list[Any]:
+    if not it.boundary_handle and not it.boundary:
+        raise AcadError("A hatch needs boundary points or a boundary_handle.")
+    temp = None if it.boundary_handle else _lwpoly(ms, it.boundary or [], True)
+    loop = acad.by_handle(d, it.boundary_handle) if it.boundary_handle else temp
+    hatch = ms.AddHatch(0, it.pattern, True)
+    hatch.AppendOuterLoop(cad.objects([loop]))
+    if it.pattern.upper() != "SOLID":
+        hatch.PatternScale = it.scale
+        hatch.PatternAngle = math.radians(it.angle_deg)
+    hatch.Evaluate()
+    if temp is not None:
+        temp.Delete()
+    return [hatch]
+
+
+def _block(ms: Any, d: Any, it: Block) -> list[Any]:
+    source = it.name
+    if source.lower().endswith((".dwg", ".dxf")):
+        source = files.safe_path(source, extensions={".dwg", ".dxf"}, must_exist=True)
+    ref = ms.InsertBlock(_p(it.position), source, it.scale, it.scale, it.scale, math.radians(it.rotation_deg))
+    if it.attributes and ref.HasAttributes:
+        wanted = {k.upper(): v for k, v in it.attributes.items()}
+        for att in ref.GetAttributes():
+            if att.TagString.upper() in wanted:
+                att.TextString = wanted[att.TagString.upper()]
+    return [ref]
+
+
+MAKERS = {
+    "line": _line, "polyline": _polyline, "rectangle": _rectangle, "circle": _circle, "arc": _arc,
+    "walls": _walls, "text": _text, "dimension": _dimension, "hatch": _hatch, "block": _block,
+}
 
 
 def register(mcp: MCPServer) -> None:
-    @mcp.tool(annotations=WRITE)
-    async def draw_line(start: list[float], end: list[float], layer: str = "") -> str:
-        """Draw a line from `start` [x,y] to `end` [x,y] in model space."""
+    @mcp.tool(**spec("Draw", WRITE))
+    async def draw(items: Annotated[list[Shape], Field(min_length=1, max_length=MAX_ITEMS)], layer: str = "") -> str:
+        """Draw one or many items in model space, all as ONE undo step. Each item has a `shape`:
+        line, polyline, rectangle, circle, arc, walls (double line from the centerline), text,
+        dimension, hatch or block (insert, with attributes). Points are [x, y] or [x, y, z]; coordinates
+        and sizes are in drawing units. An item's `layer` wins over the call's `layer`; with neither, the
+        current layer is used. Missing layers are created."""
 
         def body(d: Any) -> str:
-            ent = d.ModelSpace.AddLine(_p(start), _p(end))
-            _set_layer(ent, d, layer)
-            return f"Line created (handle {ent.Handle})."
+            ms = d.ModelSpace
+            made: list[str] = []
+            for it in items:
+                target = it.layer or layer
+                for ent in MAKERS[it.shape](ms, d, it):
+                    if target:
+                        acad.ensure_layer(d, target)
+                        ent.Layer = target
+                    made.append(f"{it.shape} {ent.Handle}")
+            more = " ..." if len(made) > 60 else ""
+            return f"{len(made)} object(s) created: {', '.join(made[:60])}{more}"
 
-        return await acad.change("draw_line", {"start": start, "end": end, "layer": layer}, body)
-
-    @mcp.tool(annotations=WRITE)
-    async def draw_polyline(points: PointList, closed: bool = False, layer: str = "") -> str:
-        """Draw a polyline through the points [[x,y], ...]. closed=True closes the outline
-        (use it for rooms, so their area can be computed later)."""
-        _check_points(points, 2)
-
-        def body(d: Any) -> str:
-            ent = _lwpoly(d.ModelSpace, points, closed)
-            _set_layer(ent, d, layer)
-            return f"Polyline created (handle {ent.Handle}, {len(points)} vertices)."
-
-        return await acad.change("draw_polyline", {"points": points, "closed": closed, "layer": layer}, body)
-
-    @mcp.tool(annotations=WRITE)
-    async def draw_rectangle(corner: list[float], width: float, height: float, layer: str = "") -> str:
-        """Draw a rectangle (closed polyline) from the lower-left `corner` [x,y], with width
-        (X axis) and height (Y axis) in drawing units."""
-        x, y = corner[0], corner[1]
-        pts = [[x, y], [x + width, y], [x + width, y + height], [x, y + height]]
-
-        def body(d: Any) -> str:
-            ent = _lwpoly(d.ModelSpace, pts, True)
-            _set_layer(ent, d, layer)
-            return f"Rectangle created (handle {ent.Handle})."
-
-        return await acad.change("draw_rectangle", {"corner": corner, "width": width, "height": height,
-                                                    "layer": layer}, body)
-
-    @mcp.tool(annotations=WRITE)
-    async def draw_circle(center: list[float], radius: float, layer: str = "") -> str:
-        """Draw a circle."""
-        if radius <= 0:
-            raise AcadError("The radius must be positive.")
-
-        def body(d: Any) -> str:
-            ent = d.ModelSpace.AddCircle(_p(center), float(radius))
-            _set_layer(ent, d, layer)
-            return f"Circle created (handle {ent.Handle})."
-
-        return await acad.change("draw_circle", {"center": center, "radius": radius, "layer": layer}, body)
-
-    @mcp.tool(annotations=WRITE)
-    async def draw_arc(center: list[float], radius: float, start_angle_deg: float, end_angle_deg: float,
-                       layer: str = "") -> str:
-        """Draw an arc (angles in degrees, counterclockwise from the X axis).
-        Useful for door swings."""
-        if radius <= 0:
-            raise AcadError("The radius must be positive.")
-
-        def body(d: Any) -> str:
-            ent = d.ModelSpace.AddArc(_p(center), float(radius),
-                                      math.radians(start_angle_deg), math.radians(end_angle_deg))
-            _set_layer(ent, d, layer)
-            return f"Arc created (handle {ent.Handle})."
-
-        return await acad.change("draw_arc", {"center": center, "radius": radius, "start": start_angle_deg,
-                                              "end": end_angle_deg, "layer": layer}, body)
-
-    @mcp.tool(annotations=WRITE)
-    async def draw_walls(path: PointList, thickness: float, closed: bool = False, layer: str = "A-WALL") -> str:
-        """Draw walls as double lines from the wall CENTERLINE (`path`, [[x,y],...]).
-        `thickness` is the total thickness (e.g. 0.15 in meters, or 15 if the drawing is in cm).
-        closed=True for a closed outline (e.g. the perimeter of a room)."""
-        _check_points(path, 2)
-        if thickness <= 0:
-            raise AcadError("The thickness must be positive.")
-
-        def body(d: Any) -> str:
-            axis = _lwpoly(d.ModelSpace, path, closed)
-            handles = []
-            try:
-                for off in (thickness / 2, -thickness / 2):
-                    for o in axis.Offset(off):
-                        _set_layer(o, d, layer)
-                        handles.append(o.Handle)
-            finally:
-                axis.Delete()
-            return f"Walls created on layer {layer}: {len(handles)} outline(s) (handles {', '.join(handles)})."
-
-        return await acad.change("draw_walls", {"path": path, "thickness": thickness, "closed": closed,
-                                                "layer": layer}, body)
-
-    @mcp.tool(annotations=WRITE)
-    async def draw_text(text: str, position: list[float], height: float, rotation_deg: float = 0,
-                        multiline_width: float = 0, layer: str = "") -> str:
-        """Write text. If `multiline_width` > 0 it creates an MText (multi-line text that
-        wraps at that width); otherwise a single-line text."""
-        if height <= 0:
-            raise AcadError("The text height must be positive.")
-
-        def body(d: Any) -> str:
-            if multiline_width > 0:
-                ent = d.ModelSpace.AddMText(_p(position), float(multiline_width), text)
-                ent.Height = float(height)
-            else:
-                ent = d.ModelSpace.AddText(text, _p(position), float(height))
-            if rotation_deg:
-                ent.Rotation = math.radians(rotation_deg)
-            _set_layer(ent, d, layer)
-            return f"Text created (handle {ent.Handle})."
-
-        return await acad.change("draw_text", {"text": text, "position": position, "layer": layer}, body)
-
-    @mcp.tool(annotations=WRITE)
-    async def add_dimension(start: list[float], end: list[float], text_position: list[float],
-                            kind: str = "aligned", angle_deg: float = 0, layer: str = "") -> str:
-        """Create a dimension between two points. kind='aligned' (aligned to the points) or
-        'linear' (horizontal/vertical; use angle_deg=0 for horizontal, 90 for vertical).
-        `text_position` sets where the dimension line goes."""
-        if kind not in ("aligned", "linear"):
-            raise AcadError("kind must be 'aligned' or 'linear'.")
-
-        def body(d: Any) -> str:
-            if kind == "linear":
-                ent = d.ModelSpace.AddDimRotated(_p(start), _p(end), _p(text_position), math.radians(angle_deg))
-            else:
-                ent = d.ModelSpace.AddDimAligned(_p(start), _p(end), _p(text_position))
-            _set_layer(ent, d, layer)
-            return f"Dimension created (handle {ent.Handle}, measurement {ent.Measurement:.4f})."
-
-        return await acad.change("add_dimension", {"start": start, "end": end, "kind": kind, "layer": layer}, body)
-
-    @mcp.tool(annotations=WRITE)
-    async def draw_hatch(boundary: PointList | None = None, boundary_handle: str = "", pattern: str = "SOLID",
-                         scale: float = 1.0, angle_deg: float = 0, layer: str = "") -> str:
-        """Create a hatch inside a boundary: pass `boundary` (points) OR `boundary_handle`
-        (handle of an existing closed polyline). Common patterns: SOLID, ANSI31, AR-CONC,
-        AR-SAND, AR-BRSTD, AR-PARQ1, DOTS, GRAVEL."""
-        if not boundary_handle and not boundary:
-            raise AcadError("Pass boundary (points) or boundary_handle.")
-        if boundary and not boundary_handle:
-            _check_points(boundary, 3)
-
-        def body(d: Any) -> str:
-            temp = None
-            if boundary_handle:
-                loop = acad.by_handle(d, boundary_handle)
-            else:
-                loop = temp = _lwpoly(d.ModelSpace, boundary or [], True)
-            hatch = d.ModelSpace.AddHatch(0, pattern, True)
-            hatch.AppendOuterLoop(cad.objects([loop]))
-            if pattern.upper() != "SOLID":
-                hatch.PatternScale = float(scale)
-                hatch.PatternAngle = math.radians(angle_deg)
-            hatch.Evaluate()
-            _set_layer(hatch, d, layer)
-            if temp is not None:
-                temp.Delete()
-            return f"Hatch {pattern} created (handle {hatch.Handle}, area {hatch.Area:.4f})."
-
-        return await acad.change("draw_hatch", {"pattern": pattern, "boundary_handle": boundary_handle,
-                                                "layer": layer}, body)
-
-    @mcp.tool(annotations=WRITE)
-    async def insert_block(name: str, position: list[float], scale: float = 1.0, rotation_deg: float = 0,
-                           attributes: dict[str, str] | None = None, layer: str = "") -> str:
-        """Insert a block already defined in the drawing (see list_blocks) or a .dwg file by its
-        full path. `attributes` fills attributes by TAG (e.g. {"NAME": "LIVING ROOM"})."""
-        if scale <= 0:
-            raise AcadError("The scale must be positive.")
-
-        def body(d: Any) -> str:
-            source = _block_source(name)
-            ref = d.ModelSpace.InsertBlock(_p(position), source, float(scale), float(scale), float(scale),
-                                           math.radians(rotation_deg))
-            filled = 0
-            if attributes and ref.HasAttributes:
-                wanted = {k.upper(): v for k, v in attributes.items()}
-                for att in ref.GetAttributes():
-                    if att.TagString.upper() in wanted:
-                        att.TextString = wanted[att.TagString.upper()]
-                        filled += 1
-            _set_layer(ref, d, layer)
-            return f"Block {acad.effective_block_name(ref)} inserted (handle {ref.Handle}, {filled} attribute(s) filled)."
-
-        return await acad.change("insert_block", {"name": name, "position": position, "layer": layer}, body)
+        return await acad.change("draw", {"items": [i.model_dump() for i in items], "layer": layer}, body)

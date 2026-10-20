@@ -1,0 +1,36 @@
+{
+  "name": "autocad",
+  "displayName": "AutoCAD",
+  "version": "0.3.0",
+  "description": "Query, draw, organize and export CAD drawings from Claude Code: room areas and area schedules, block takeoffs, walls, layer standards (AsBEA or AIA) and PDF sheets. Drives AutoCAD, BricsCAD, ZWCAD or GstarCAD on Windows, and edits DXF/DWG files directly on a Mac or Linux.",
+  "author": {
+    "name": "Gabriel Sandim",
+    "url": "https://github.com/gabrielbsandim"
+  },
+  "homepage": "https://github.com/gabrielbsandim/autocad-mcp",
+  "repository": "https://github.com/gabrielbsandim/autocad-mcp",
+  "license": "MIT",
+  "keywords": [
+    "autocad",
+    "cad",
+    "dwg",
+    "dxf",
+    "architecture",
+    "mcp"
+  ],
+  "mcpServers": {
+    "autocad": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--directory",
+        "${CLAUDE_PLUGIN_ROOT}",
+        "--no-dev",
+        "autocad-mcp"
+      ],
+      "env": {
+        "AUTOCAD_MCP_LAYER_STANDARD": "asbea"
+      }
+    }
+  }
+}

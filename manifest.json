@@ -1,0 +1,83 @@
+{
+  "manifest_version": "0.4",
+  "name": "autocad-mcp",
+  "display_name": "AutoCAD",
+  "version": "0.3.0",
+  "description": "Query, draw, organize and export CAD drawings: AutoCAD, BricsCAD, ZWCAD, GstarCAD, or DXF/DWG files on a Mac.",
+  "long_description": "Talk to Claude about the drawing you have open. Room areas and the area schedule, block counts by type, lengths per layer, walls from a centerline, layer cleanup against an office standard, and every sheet to PDF. On Windows it drives the CAD that is running (AutoCAD full, BricsCAD, ZWCAD, GstarCAD). On a Mac, with AutoCAD LT or with no CAD at all, it edits .dxf files directly (and .dwg with the free ODA File Converter). Every change is one undo step, nothing is saved unless you ask, and no network port is opened.",
+  "author": {
+    "name": "Gabriel Sandim",
+    "url": "https://github.com/gabrielbsandim"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/gabrielbsandim/autocad-mcp"
+  },
+  "homepage": "https://github.com/gabrielbsandim/autocad-mcp",
+  "documentation": "https://github.com/gabrielbsandim/autocad-mcp#readme",
+  "support": "https://github.com/gabrielbsandim/autocad-mcp/issues",
+  "license": "MIT",
+  "keywords": ["autocad", "cad", "dwg", "dxf", "architecture", "bricscad", "zwcad", "quantity takeoff", "area schedule"],
+  "privacy_policies": ["https://github.com/gabrielbsandim/autocad-mcp/blob/main/PRIVACY.md"],
+  "server": {
+    "type": "uv",
+    "entry_point": "src/autocad_mcp/__main__.py",
+    "mcp_config": {
+      "command": "uv",
+      "args": ["run", "--directory", "${__dirname}", "--no-dev", "autocad-mcp"],
+      "env": {
+        "AUTOCAD_MCP_READONLY": "${user_config.read_only}",
+        "AUTOCAD_MCP_ALLOWED_DIRS": "${user_config.allowed_dir}",
+        "AUTOCAD_MCP_LAYER_STANDARD": "${user_config.layer_standard}",
+        "AUTOCAD_MCP_LOCALE": "${user_config.locale}",
+        "AUTOCAD_MCP_BACKEND": "${user_config.backend}"
+      }
+    }
+  },
+  "user_config": {
+    "read_only": {
+      "type": "boolean",
+      "title": "Read-only",
+      "description": "Only answer questions about the drawing. Every change, save and export is refused.",
+      "default": false,
+      "required": false
+    },
+    "allowed_dir": {
+      "type": "directory",
+      "title": "Projects folder",
+      "description": "If set, drawings, CSV and PDF files can only be read and written inside this folder.",
+      "default": "",
+      "required": false
+    },
+    "layer_standard": {
+      "type": "string",
+      "title": "Layer standard",
+      "description": "asbea (Brazilian AsBEA names, ARQ-ALV...), aia (A-WALL...), or the full path of your own JSON.",
+      "default": "asbea",
+      "required": false
+    },
+    "locale": {
+      "type": "string",
+      "title": "Number format",
+      "description": "pt-BR (1.234,50 and CSV with ;) or en-US (1,234.50 and CSV with ,).",
+      "default": "pt-BR",
+      "required": false
+    },
+    "backend": {
+      "type": "string",
+      "title": "Mode",
+      "description": "auto (live CAD on Windows, files on a Mac), com (always the running CAD) or file (always edit files).",
+      "default": "auto",
+      "required": false
+    }
+  },
+  "tools_generated": false,
+  "prompts_generated": false,
+  "compatibility": {
+    "claude_desktop": ">=0.14.0",
+    "platforms": ["win32", "darwin"],
+    "runtimes": {
+      "python": ">=3.11"
+    }
+  }
+}

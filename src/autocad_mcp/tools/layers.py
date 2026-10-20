@@ -1,14 +1,13 @@
-"""Layers: list, create, configure, rename, merge and standardize."""
+"""Layers: create, configure, rename, merge and standardize."""
 from __future__ import annotations
 
-from collections import Counter
-from typing import Any
+from typing import Any, Literal
 
 from mcp.server.mcpserver import MCPServer
 
 from autocad_mcp import acad, cad, files, layer_standard
 from autocad_mcp.errors import AcadError
-from autocad_mcp.tools import DESTRUCTIVE, READ, WRITE
+from autocad_mcp.tools import DESTRUCTIVE, READ, WRITE, spec
 from autocad_mcp.tools.edit import color_index, ensure_linetype
 
 
@@ -43,17 +42,6 @@ def _apply_props(d: Any, lay: Any, color: Any = None, linetype: str = "", linewe
         lay.Description = description
 
 
-def _count_by_layer(d: Any, scan: acad.Scan) -> Counter[str]:
-    c: Counter[str] = Counter()
-    for b in d.Blocks:
-        if b.IsXRef:
-            continue
-        for e in b:
-            with scan.item():
-                c[str(e.Layer).upper()] += 1
-    return c
-
-
 def _move_all_to_layer(d: Any, source: str, target: str) -> int:
     """Move objects from `source` to `target` across the whole drawing (model, layouts and blocks).
     Any failure propagates, so the write wrapper rolls the whole merge back."""
@@ -82,125 +70,82 @@ def _merge_one(d: Any, source: str, target: str) -> str:
     return f"{source} -> {target}: {moved} object(s) moved, layer deleted"
 
 
-def _standard(standard_file: str) -> tuple[Any, list[layer_standard.LayerRule]]:
-    path = layer_standard.standard_path(files.safe_path(standard_file, extensions={".json"}, must_exist=True)
-                                        if standard_file else "")
+def _standard(standard: str) -> tuple[Any, list[layer_standard.LayerRule]]:
+    path = layer_standard.built_in(standard) if standard else layer_standard.standard_path()
+    if path is None:
+        path = layer_standard.standard_path(files.safe_path(standard, extensions={".json"}, must_exist=True))
     try:
         return path, layer_standard.load_standard(path)
     except (OSError, ValueError, KeyError) as exc:
         raise AcadError(f"Could not read the layer standard {path}: {exc}") from exc
 
 
+def _names(d: Any) -> set[str]:
+    return {str(l.Name).upper() for l in d.Layers}
+
+
 def register(mcp: MCPServer) -> None:
-    @mcp.tool(annotations=READ)
-    async def list_layers(count_objects: bool = True) -> str:
-        """List layers with color, linetype, lineweight, on/frozen/locked/plot state and
-        how many objects each one has (including inside blocks)."""
+    @mcp.tool(**spec("Create or change layers", WRITE))
+    async def manage_layer(action: Literal["create", "update", "set_current", "rename"], names: list[str],
+                           new_name: str = "", color: str = "", linetype: str = "",
+                           lineweight_mm: float | None = None, on: bool | None = None, frozen: bool | None = None,
+                           locked: bool | None = None, plottable: bool | None = None,
+                           description: str | None = None) -> str:
+        """Layers, as one undo step. Only the parameters you pass change.
+        - create: create `names` (or adjust them if they exist) with the given properties.
+        - update: change properties of existing layers in `names` (turn off, freeze, lock, mark non-plotting...).
+        - set_current: make names[0] the current layer (created and thawed if needed).
+        - rename: rename names[0] to `new_name` (if `new_name` exists, use merge_layers).
+        Color: a name ('red', 'gray'...) or an ACI number 1-255. Lineweight in mm (e.g. 0.25)."""
+        if not names or not all(n.strip() for n in names):
+            raise AcadError("Give at least one layer name.")
 
-        def fn() -> str:
-            d = cad.doc()
-            scan = acad.Scan()
-            counts = _count_by_layer(d, scan) if count_objects else Counter()
-            current = str(d.GetVariable("CLAYER")).upper()
-            rows = []
-            for lay in d.Layers:
-                lw = lay.Lineweight
-                rows.append({
-                    "name": lay.Name,
-                    "current": lay.Name.upper() == current,
-                    "color": lay.Color,
-                    "linetype": lay.Linetype,
-                    "lineweight_mm": (lw / 100) if lw >= 0 else "default",
-                    "on": bool(lay.LayerOn),
-                    "frozen": bool(lay.Freeze),
-                    "locked": bool(lay.Lock),
-                    "plot": bool(lay.Plottable),
-                    "description": lay.Description,
-                    "objects": counts.get(lay.Name.upper(), 0) if count_objects else None,
-                })
-            return acad.dumps(scan.report({"layers": rows}))
+        def create(d: Any) -> str:
+            for n in names:
+                _apply_props(d, acad.ensure_layer(d, n), color or None, linetype, lineweight_mm, on, frozen, locked,
+                             plottable, description)
+            return f"{len(names)} layer(s) created or updated."
 
-        return await cad.run(fn)
-
-    @mcp.tool(annotations=WRITE)
-    async def create_layer(name: str, color: str = "", linetype: str = "", lineweight_mm: float | None = None,
-                           plottable: bool = True, description: str = "", make_current: bool = False) -> str:
-        """Create a layer (or adjust it if it already exists). Color: a name ('red', 'blue',
-        'gray'...) or an ACI number 1-255. Lineweight in mm (e.g. 0.25)."""
-        if not name.strip():
-            raise AcadError("The layer name cannot be empty.")
-
-        def body(d: Any) -> str:
-            existed = name.upper() in {str(l.Name).upper() for l in d.Layers}
-            lay = acad.ensure_layer(d, name)
-            _apply_props(d, lay, color or None, linetype, lineweight_mm, plottable=plottable,
-                         description=description or None)
-            if make_current:
-                d.ActiveLayer = lay
-            return f"Layer {name} {'updated' if existed else 'created'}{' and made current' if make_current else ''}."
-
-        return await acad.change("create_layer", {"name": name, "color": color, "linetype": linetype,
-                                                  "make_current": make_current}, body)
-
-    @mcp.tool(annotations=WRITE)
-    async def set_layer_properties(names: list[str], color: str = "", linetype: str = "",
-                                   lineweight_mm: float | None = None, on: bool | None = None,
-                                   frozen: bool | None = None, locked: bool | None = None,
-                                   plottable: bool | None = None, description: str | None = None) -> str:
-        """Change properties of one or more layers (only the given parameters change).
-        E.g. turn off furniture layers, lock the wall layer, mark a layer as non-plotting."""
-
-        def body(d: Any) -> str:
+        def update(d: Any) -> str:
             layers = [_layer(d, n) for n in names]
             for lay in layers:
-                _apply_props(d, lay, color or None, linetype, lineweight_mm, on, frozen, locked,
-                             plottable, description)
+                _apply_props(d, lay, color or None, linetype, lineweight_mm, on, frozen, locked, plottable, description)
             return f"{len(layers)} layer(s) updated."
 
-        return await acad.change("set_layer_properties", {"names": names, "color": color, "on": on,
-                                                          "frozen": frozen, "locked": locked}, body)
-
-    @mcp.tool(annotations=WRITE)
-    async def set_current_layer(name: str) -> str:
-        """Set the current layer (where the user will draw next). Creates it if it doesn't exist."""
-
-        def body(d: Any) -> str:
-            lay = acad.ensure_layer(d, name)
+        def set_current(d: Any) -> str:
+            lay = acad.ensure_layer(d, names[0])
             if lay.Freeze:
                 lay.Freeze = False
             d.ActiveLayer = lay
-            return f"Current layer: {name}"
+            return f"Current layer: {names[0]}"
 
-        return await acad.change("set_current_layer", {"name": name}, body)
-
-    @mcp.tool(annotations=WRITE)
-    async def rename_layer(old_name: str, new_name: str) -> str:
-        """Rename a layer. If a layer with the new name already exists, use merge_layers."""
-        if old_name.upper() in layer_standard.PROTECTED:
-            raise AcadError(f"Layer {old_name} is a system layer and cannot be renamed.")
-        if not new_name.strip():
-            raise AcadError("The new name cannot be empty.")
-
-        def body(d: Any) -> str:
-            lay = _layer(d, old_name)
-            taken = {str(l.Name).upper() for l in d.Layers}
-            if new_name.upper() != old_name.upper() and new_name.upper() in taken:
+        def rename(d: Any) -> str:
+            old = names[0]
+            if old.upper() in layer_standard.PROTECTED:
+                raise AcadError(f"Layer {old} is a system layer and cannot be renamed.")
+            if not new_name.strip():
+                raise AcadError("Pass new_name.")
+            lay = _layer(d, old)
+            if new_name.upper() != old.upper() and new_name.upper() in _names(d):
                 raise AcadError(f"Layer {new_name} already exists. Use merge_layers to combine them.")
             lay.Name = new_name
-            return f"Layer {old_name} renamed to {new_name}."
+            return f"Layer {old} renamed to {new_name}."
 
-        return await acad.change("rename_layer", {"old": old_name, "new": new_name}, body)
+        actions = {"create": create, "update": update, "set_current": set_current, "rename": rename}
+        args = {"action": action, "names": names, "new_name": new_name, "color": color, "linetype": linetype,
+                "lineweight_mm": lineweight_mm, "on": on, "frozen": frozen, "locked": locked}
+        return await acad.change("manage_layer", args, actions[action])
 
-    @mcp.tool(annotations=DESTRUCTIVE)
+    @mcp.tool(**spec("Merge layers", DESTRUCTIVE))
     async def merge_layers(sources: list[str], target: str) -> str:
-        """Merge layers: move every object (including inside blocks) from `sources` to
-        `target` and delete the source layers. The target is created if it doesn't exist."""
+        """Merge layers: move every object (including inside blocks) from `sources` to `target` and delete the
+        source layers. The target is created if it doesn't exist. Nothing changes if a source is missing."""
         wanted = [s for s in sources if s.upper() != target.upper() and s.upper() not in layer_standard.PROTECTED]
         if not wanted:
             raise AcadError("Nothing to merge: give source layers other than the target, 0 and Defpoints.")
 
         def body(d: Any) -> str:
-            missing = [s for s in wanted if s.upper() not in {str(l.Name).upper() for l in d.Layers}]
+            missing = [s for s in wanted if s.upper() not in _names(d)]
             if missing:
                 raise AcadError(f"Layer(s) not found: {', '.join(missing)}. Nothing was merged.")
             acad.ensure_layer(d, target)
@@ -208,15 +153,15 @@ def register(mcp: MCPServer) -> None:
 
         return await acad.change("merge_layers", {"sources": sources, "target": target}, body)
 
-    @mcp.tool(annotations=READ)
-    async def check_layer_standard(standard_file: str = "") -> str:
-        """Compare the drawing's layers with the office standard (JSON file) and show the
-        plan: what would be renamed, merged, what is already standard and what is not.
-        Changes NOTHING. Without `standard_file` it uses the built-in architecture standard
-        (or the one set in AUTOCAD_MCP_LAYER_STANDARD)."""
+    @mcp.tool(**spec("Check layer standard", READ))
+    async def check_layer_standard(standard: str = "") -> str:
+        """Compare the drawing's layers with a layer standard and show the plan: what would be renamed,
+        merged, what is already standard and what is not. Changes NOTHING. `standard`: 'asbea' (Brazilian,
+        ARQ-ALV, ARQ-POR...), 'aia' (A-WALL, A-DOOR...) or the full path of an office JSON; empty = the one
+        configured for this server."""
 
         def fn() -> str:
-            path, rules = _standard(standard_file)
+            path, rules = _standard(standard)
             d = cad.doc()
             names = [str(l.Name) for l in d.Layers]
             p = layer_standard.plan(names, rules)
@@ -227,16 +172,16 @@ def register(mcp: MCPServer) -> None:
 
         return await cad.run(fn)
 
-    @mcp.tool(annotations=DESTRUCTIVE)
-    async def apply_layer_standard(standard_file: str = "", create_missing: bool = False,
+    @mcp.tool(**spec("Apply layer standard", DESTRUCTIVE))
+    async def apply_layer_standard(standard: str = "", create_missing: bool = False,
                                    apply_properties: bool = True) -> str:
-        """Standardize the drawing's layers according to the standard (run check_layer_standard first
-        and show the plan to the user). Renames, merges equivalent layers, applies the standard's
-        color/linetype/lineweight/plot settings and, with create_missing=True, creates the missing
-        standard layers. Everything becomes a single undo step."""
+        """Standardize the layers (run check_layer_standard first and show the plan to the user): renames,
+        merges equivalent layers, applies the standard's color/linetype/lineweight/plot and, with
+        create_missing=True, creates the missing standard layers. `standard` as in check_layer_standard.
+        One undo step."""
 
         def body(d: Any) -> str:
-            path, rules = _standard(standard_file)
+            path, rules = _standard(standard)
             p = layer_standard.plan([str(l.Name) for l in d.Layers], rules)
             log = []
             for old, new in p["rename"]:
@@ -260,5 +205,5 @@ def register(mcp: MCPServer) -> None:
                 log.append("non-standard (left untouched): " + ", ".join(p["non_standard"]))
             return f"Standardization with {path.name} finished:\n" + "\n".join(log)
 
-        return await acad.change("apply_layer_standard", {"standard": standard_file,
+        return await acad.change("apply_layer_standard", {"standard": standard,
                                                           "create_missing": create_missing}, body)

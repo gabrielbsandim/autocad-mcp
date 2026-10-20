@@ -6,6 +6,7 @@ unchanged on both backends. Changes stay in memory until save_drawing writes the
 from __future__ import annotations
 
 import io
+import logging
 import math
 import os
 from collections.abc import Iterable, Iterator, Sequence
@@ -34,6 +35,11 @@ PROTECTED_LAYERS = {"0", "DEFPOINTS"}
 ODA_HELP = ("DWG files need the free ODA File Converter, installed by the user from "
             "https://www.opendesign.com/guestfiles/oda_file_converter (free for non-commercial use). "
             "Without it, save the drawing as DXF in the CAD and open the .dxf.")
+
+TABLE_PREFIX = "MCP_TABLE_"
+
+# ezdxf warns on stderr about header variables it skips on every undo snapshot.
+logging.getLogger("ezdxf").setLevel(logging.ERROR)
 
 OBJECT_NAMES = {
     "LINE": "AcDbLine", "LWPOLYLINE": "AcDbPolyline", "CIRCLE": "AcDbCircle", "ARC": "AcDbArc",
@@ -527,6 +533,8 @@ class FileEntity:
             return DIMENSION_NAMES.get(self.e.dxf.dimtype & 0x0F, "AcDbDimension")
         if t == "POLYLINE":
             return "AcDb3dPolyline" if self.e.is_3d_polyline else "AcDb2dPolyline"
+        if t == "INSERT" and self.e.dxf.name.startswith(TABLE_PREFIX):
+            return "AcDbTable"
         return OBJECT_NAMES.get(t, "AcDb" + t.title())
 
     @property
@@ -893,10 +901,10 @@ class FileTable(FileEntity):
     def __init__(self, document: FileDocument, layout: Any, point: tuple[float, float, float], rows: int,
                  cols: int, row_height: float, col_width: float) -> None:
         FileTable._count += 1
-        name = f"MCP_TABLE_{FileTable._count}"
+        name = f"{TABLE_PREFIX}{FileTable._count}"
         while name in document.dxf.blocks:
             FileTable._count += 1
-            name = f"MCP_TABLE_{FileTable._count}"
+            name = f"{TABLE_PREFIX}{FileTable._count}"
         self.block = document.dxf.blocks.new(name)
         super().__init__(document, layout.add_blockref(name, point))
         self.e.dxf.layer = str(document.GetVariable("CLAYER"))
