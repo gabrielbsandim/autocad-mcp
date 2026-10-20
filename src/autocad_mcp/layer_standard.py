@@ -56,8 +56,10 @@ def load_standard(path: Path) -> list[LayerRule]:
     return rules
 
 
-def _specificity(pattern: str) -> int:
-    return sum(1 for c in pattern if c not in "*?")
+def _specificity(pattern: str) -> float:
+    """Literal characters count; an alias with no wildcard beats a wildcard one of the same length."""
+    literal = sum(1 for c in pattern if c not in "*?")
+    return literal + (0.5 if literal == len(pattern) else 0)
 
 
 def target_for(layer: str, rules: list[LayerRule]) -> LayerRule | None:

@@ -97,14 +97,14 @@ async def test_tables_are_drawn_for_every_report(opened):
     assert "row(s)" in await call("place_table", report="lengths", position=[60, 0])
     blocks = [b for b in cad.doc().dxf.blocks if b.name.startswith("MCP_TABLE_")]
     texts = {e.dxf.text for b in blocks for e in b if e.dxftype() == "TEXT"}
-    assert {"AREA SCHEDULE", "TOTAL", "54,00", "CIRCULAÇÃO", "P1", "QUANTITY TAKEOFF"} <= texts
+    assert {"QUADRO DE ÁREAS", "TOTAL", "54,00", "CIRCULAÇÃO", "P1", "QUANTITATIVO DE BLOCOS"} <= texts
 
 
 async def test_csv_exports_are_excel_safe(opened, tmp_path):
     rooms_csv = tmp_path / "areas.csv"
     await call("export_csv", report="rooms", file_path=str(rooms_csv))
     lines = rooms_csv.read_text(encoding="utf-8-sig").splitlines()
-    assert lines[0] == "ROOM;No.;AREA (m²);PERIMETER (m)"
+    assert lines[0] == "AMBIENTE;Nº;ÁREA (m²);PERÍMETRO (m)"
     assert "QUARTO;101;12,00;14,00" in lines
     assert lines[-1] == "TOTAL;;54,00;"
     with pytest.raises(ToolError, match="already exists"):

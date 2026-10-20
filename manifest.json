@@ -2,7 +2,7 @@
   "manifest_version": "0.4",
   "name": "autocad-mcp",
   "display_name": "AutoCAD",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Query, draw, organize and export CAD drawings: AutoCAD, BricsCAD, ZWCAD, GstarCAD, or DXF/DWG files on a Mac.",
   "long_description": "Talk to Claude about the drawing you have open. Room areas and the area schedule, block counts by type, lengths per layer, walls from a centerline, layer cleanup against an office standard, and every sheet to PDF. On Windows it drives the CAD that is running (AutoCAD full, BricsCAD, ZWCAD, GstarCAD). On a Mac, with AutoCAD LT or with no CAD at all, it edits .dxf files directly (and .dwg with the free ODA File Converter). Every change is one undo step, nothing is saved unless you ask, and no network port is opened.",
   "author": {

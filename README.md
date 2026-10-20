@@ -14,12 +14,15 @@ and exports the drawing.
    - "Which drawing is open and what unit is it in?"
    - "Build the area schedule for the rooms and place the table next to the plan."
    - "How many doors and windows are there? Split them by type and save it for Excel."
-   - "Export all sheets to PDF."
+   - "Monte o quadro de esquadrias com largura, altura e peitoril."
+   - "Monte o quadro de áreas do terreno e confira TO 60 %, CA 2 e TP 15 %."
+   - "Export all sheets to PDF." / "Exporte para PDF todas as pranchas dos desenhos desta pasta."
    - "Put the layers in the AsBEA standard."
    - "I selected some text. Move all of it to layer ARQ-___-TXT with height 0.20."
    - "Draw the walls of a 4 x 3 m room, 15 cm thick, starting at 0,0."
 3. In Claude Desktop the **+** button holds ready-made shortcuts: *Area schedule*, *Quantity takeoff*,
-   *Export sheets to PDF*, *Review layers* and *Review drawing*.
+   *Door and window schedule*, *Site areas and indices*, *Export sheets to PDF*, *Review layers* and
+   *Review drawing*.
 
 **Tips**
 - Select objects in the CAD and say "what I selected".
@@ -62,7 +65,7 @@ on a Mac):
 
 Then quit Claude Desktop completely and open it again.
 
-## What it can do (22 tools)
+## What it can do (23 tools)
 
 | Area | Tools |
 |---|---|
@@ -71,11 +74,26 @@ Then quit Claude Desktop completely and open it again.
 | Draw | `draw`: lines, polylines, rectangles, circles, arcs, **walls from a centerline**, text, dimensions, hatches and blocks with attributes, many at once in one undo step |
 | Edit | `transform` (move, copy in series, rotate, scale, mirror, offset), `delete_entities`, `change_properties` |
 | Layers | `manage_layer`, `merge_layers`, **`check_layer_standard` and `apply_layer_standard`** (AsBEA, AIA or yours) |
-| Areas and quantities | **`room_areas`**, `label_rooms`, **`takeoff`** (blocks by type, lengths and hatch areas per layer), `place_table`, `export_csv` |
-| Output | **`export_pdf`** (every sheet with its own page setup), `maintain_drawing` (purge, audit) |
+| Areas and quantities | **`room_areas`**, `label_rooms`, **`takeoff`** (blocks by type, lengths and hatch areas per layer, **door and window schedule**), **`site_areas`** (lot, built area per floor, projection, permeable, **TO, CA, TP** against the zoning limits), `place_table`, `export_csv` |
+| Output | **`export_pdf`** (every sheet with its own page setup, of one drawing, a list, a folder or every open drawing), `maintain_drawing` (purge, audit) |
 
 Every tool has a title and says whether it only reads, changes the drawing, or can destroy something, so
 Claude asks before the risky ones.
+
+### Made for Brazilian offices
+
+- **Quadro de áreas** with the room names and numbers found inside each outline, totals in m², labels
+  `A = 12,50 m²` placed inside U and L shaped rooms.
+- **Quadro de esquadrias:** doors and windows found by block name or layer, grouped by code (TIPO, CODIGO...),
+  with width, height and sill read from attributes (LARGURA, ALTURA, PEITORIL or `80x210`, in m, cm or mm);
+  without a width attribute, it is measured from the block.
+- **Quadro de áreas do terreno** for the permit: lot area, built area per floor (each floor plan's region),
+  projection, permeable area, **TO**, **CA** and **TP**, each checked against the limits of the zoning law
+  you give.
+- Titles and headers in Portuguese (`QUADRO DE ÁREAS`, `AMBIENTE`, `ÁREA (m²)`...), numbers as `1.234,50`
+  and CSV with `;` so Excel opens them as numbers. `AUTOCAD_MCP_LOCALE=en-US` switches all of it to English.
+- **AsBEA layers**, including the ones the site table reads (`ARQ-___-TER`, `ARQ-___-ACO`, `ARQ-___-APJ`,
+  `ARQ-___-PER`).
 
 ### Layer standards
 

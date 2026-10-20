@@ -59,11 +59,30 @@ def quantity_takeoff() -> str:
     )
 
 
+@mcp.prompt(title="Door and window schedule", description="Quadro de esquadrias: doors and windows by code")
+def openings_schedule() -> str:
+    return (
+        "Build the door and window schedule of the active drawing (takeoff kind='openings'): code, kind, count, "
+        "width, height and sill. Point out which sizes were measured or are missing and ask me for them, then "
+        "offer to place it as a table and save a CSV."
+    )
+
+
+@mcp.prompt(title="Site areas and indices", description="Lot, built area, TO, CA and TP for the permit")
+def site_table() -> str:
+    return (
+        "Build the site area table of the active drawing (site_areas): lot area, built area per floor, "
+        "projection, permeable area, TO, CA and TP. Ask me for the zoning limits to check them against, and "
+        "which floor plan is which if there is more than one. Then offer to place it as a table."
+    )
+
+
 @mcp.prompt(title="Export sheets to PDF", description="Create one PDF per sheet of the drawing")
 def export_sheets() -> str:
     return (
         "List the sheets (layouts) of the active drawing and confirm with me which ones to export. "
-        "Then export them to PDF and tell me the folder where they were saved."
+        "Then export them to PDF and tell me the folder where they were saved. If I name a folder or several "
+        "drawings, export all of them in one go with export_pdf(drawings=[...])."
     )
 
 

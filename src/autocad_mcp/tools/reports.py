@@ -18,14 +18,24 @@ UNIT_HELP = ("`unit`: drawing unit, 'auto' (reads INSUNITS), 'mm', 'cm' or 'm'; 
 ROOMS_HELP = ("Room outlines are the CLOSED polylines on `layers` (e.g. ['A-AREA']); without it, the usual room "
               "layers (A-AREA, ARQ-___-ARE, AREAS, AMBIENTES) are used and, if none exists, the error lists the "
               "candidates so you can ask the user. Or pass `handles` / ['selection']. ")
-Report = Literal["rooms", "blocks", "lengths"]
+Report = Literal["rooms", "blocks", "lengths", "openings", "site"]
+SiteLayers = dict[str, list[str]] | None
+Floors = dict[str, list[list[float]]] | None
+Limits = dict[str, float] | None
+SITE_HELP = ("Site: closed outlines (or hatches) on the lot, built-area, projection and permeable layers; usual "
+             "names are found by themselves, otherwise the error lists candidates. `site_layers` "
+             "{'lot': [...], 'built': [...], 'projection': [...], 'permeable': [...]} overrides them; `floors` "
+             "{'TÉRREO': [[x1,y1],[x2,y2]], ...} splits the built area by the region each floor plan sits in; "
+             "`limits` {'TO': 60, 'CA': 2, 'TP': 15} checks the zoning limits (TO and TP in %).")
 TEXT_ALIGN_MIDDLE_CENTER = 10
 
 
 def _filters(layers: list[str] | None, handles: list[str] | None, names: list[str] | None,
-             region: list[list[float]] | None, group_by_attribute: str, unit: str) -> reports.Filters:
+             region: list[list[float]] | None, group_by_attribute: str, unit: str, site_layers: SiteLayers = None,
+             floors: Floors = None, limits: Limits = None) -> reports.Filters:
     return reports.Filters(layers=layers, handles=handles, names=names, region=region,
-                           group_by_attribute=group_by_attribute, unit=unit)
+                           group_by_attribute=group_by_attribute, unit=unit, site_layers=site_layers,
+                           floors=floors, limits=limits)
 
 
 def _remove_old_labels(d: Any, rooms: list[dict[str, Any]], layer: str, prefixes: list[str]) -> int:
@@ -113,7 +123,7 @@ def register(mcp: MCPServer) -> None:
         return await cad.run(fn)
 
     @mcp.tool(**spec("Quantity takeoff", READ))
-    async def takeoff(kind: Literal["blocks", "lengths"] = "blocks", names: list[str] | None = None,
+    async def takeoff(kind: Literal["blocks", "lengths", "openings"] = "blocks", names: list[str] | None = None,
                       layers: list[str] | None = None, region: list[list[float]] | None = None,
                       group_by_attribute: str = "", unit: str = "auto") -> str:
         """Quantities from the drawing.
@@ -121,11 +131,28 @@ def register(mcp: MCPServer) -> None:
           wildcards (["PORTA*", "DOOR*"]); `group_by_attribute` splits by an attribute value (e.g. "TIPO" -> P1, P2).
         - kind='lengths': per layer, total length (m) of lines, polylines, arcs, circles, splines and ellipses,
           and hatch area (m²): baseboards, thresholds, wall centerlines, hatched floors.
-        `layers` and `region` [[x1,y1],[x2,y2]] (e.g. one floor) narrow both. `unit` as in room_areas."""
+        - kind='openings': the door and window schedule (quadro de esquadrias): doors and windows found by
+          block name or layer (PORTA*, JANELA*, ARQ-POR, ARQ-CXO, A-DOOR, A-GLAZ...), grouped by code (TIPO,
+          CODIGO... or `group_by_attribute`) with width, height and sill from attributes (LARGURA, ALTURA,
+          PEITORIL or '80x210'); without a width attribute, the width is measured from the block.
+        `names`, `layers` and `region` [[x1,y1],[x2,y2]] (e.g. one floor) narrow all three. `unit` as in
+        room_areas."""
 
         def fn() -> str:
             f = _filters(layers, None, names, region, group_by_attribute, unit)
             return acad.dumps(reports.build(kind, cad.doc(), f).data)
+
+        return await cad.run(fn)
+
+    @mcp.tool(**spec("Site areas and zoning indices", READ, (
+        "The site area table for the building permit: lot area, built area (per floor), projection, permeable "
+        "area, and the indices TO (projection / lot), CA (built / lot) and TP (permeable / lot). " + SITE_HELP
+        + " " + UNIT_HELP)))
+    async def site_areas(site_layers: SiteLayers = None, floors: Floors = None, limits: Limits = None,
+                         unit: str = "auto") -> str:
+        def fn() -> str:
+            return acad.dumps(reports.build("site", cad.doc(), _filters(None, None, None, None, "", unit,
+                                                                       site_layers, floors, limits)).data)
 
         return await cad.run(fn)
 
@@ -161,13 +188,16 @@ def register(mcp: MCPServer) -> None:
     async def place_table(report: Report, position: list[float], title: str = "", layers: list[str] | None = None,
                           handles: list[str] | None = None, names: list[str] | None = None,
                           region: list[list[float]] | None = None, group_by_attribute: str = "",
-                          unit: str = "auto", text_height: float = 0, layer: str = "A-ANNO-TEXT") -> str:
+                          unit: str = "auto", site_layers: SiteLayers = None, floors: Floors = None,
+                          limits: Limits = None, text_height: float = 0, layer: str = "A-ANNO-TEXT") -> str:
         """Insert a schedule as a CAD table with its top-left corner at `position` [x, y]:
-        report='rooms' (area schedule, same filters as room_areas), 'blocks' or 'lengths' (same filters as
-        takeoff). `text_height` in drawing units (default 0.20 m)."""
+        report='rooms' (area schedule, filters as room_areas), 'blocks', 'lengths' or 'openings' (filters
+        as takeoff) or 'site' (filters as site_areas). Titles and headers follow the number format (pt-BR:
+        QUADRO DE ÁREAS, QUADRO DE ESQUADRIAS...). `text_height` in drawing units (default 0.20 m)."""
 
         def body(d: Any) -> str:
-            schedule = reports.build(report, d, _filters(layers, handles, names, region, group_by_attribute, unit))
+            schedule = reports.build(report, d, _filters(layers, handles, names, region, group_by_attribute, unit,
+                                                         site_layers, floors, limits))
             factor = schedule.data.get("factor_m") or 1.0
             h = text_height or 0.20 / factor
             handle = add_table(d, position, schedule, h, layer, title)
@@ -179,8 +209,9 @@ def register(mcp: MCPServer) -> None:
     async def export_csv(report: Report, file_path: str = "", overwrite: bool = False,
                          layers: list[str] | None = None, handles: list[str] | None = None,
                          names: list[str] | None = None, region: list[list[float]] | None = None,
-                         group_by_attribute: str = "", unit: str = "auto") -> str:
-        """Save a schedule (report='rooms', 'blocks' or 'lengths', same filters as room_areas / takeoff) to a
+                         group_by_attribute: str = "", unit: str = "auto", site_layers: SiteLayers = None,
+                         floors: Floors = None, limits: Limits = None) -> str:
+        """Save a schedule (report and filters as in place_table) to a
         CSV that Excel opens as numbers (pt-BR: ';' and decimal comma). Without `file_path`, it goes next to
         the drawing as '<drawing> - <report>.csv'. Never overwrites without overwrite=True."""
 
@@ -188,7 +219,8 @@ def register(mcp: MCPServer) -> None:
             d = cad.doc()
             path = files.output_path(file_path or _beside_drawing(d, f"{report}.csv"), extensions={".csv"},
                                      overwrite=overwrite)
-            schedule = reports.build(report, d, _filters(layers, handles, names, region, group_by_attribute, unit))
+            schedule = reports.build(report, d, _filters(layers, handles, names, region, group_by_attribute, unit,
+                                                         site_layers, floors, limits))
             rows = [*schedule.rows, *([schedule.footer] if schedule.footer else [])]
             files.write_csv(path, schedule.columns, rows)
             return f"CSV saved to {path} ({len(schedule.rows)} row(s))."

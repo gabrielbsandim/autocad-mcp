@@ -33,3 +33,11 @@ def test_built_in_standards_load_and_every_layer_is_unique():
         names = [r.name.upper() for r in rules]
         assert len(names) == len(set(names)), name
     assert load("manifest.json")["user_config"]["layer_standard"]["default"] in layer_standard.BUILT_IN
+
+
+def test_asbea_maps_site_layers_exactly():
+    rules = layer_standard.load_standard(layer_standard.BUILT_IN["asbea"])
+    found = {name: layer_standard.target_for(name, rules).name
+             for name in ("PROJECAO", "PROJECAO-LAJE", "TERRENO", "PAREDES", "A-WALL", "Walls_old", "A-AREA")}
+    assert found == {"PROJECAO": "ARQ-___-APJ", "PROJECAO-LAJE": "ARQ-PRJ", "TERRENO": "ARQ-___-TER",
+                     "PAREDES": "ARQ-ALV", "A-WALL": "ARQ-ALV", "Walls_old": "ARQ-ALV", "A-AREA": "ARQ-___-ARE"}
